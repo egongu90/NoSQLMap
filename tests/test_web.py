@@ -50,7 +50,7 @@ def test_rand_inj_string_rejects_invalid_then_accepts(monkeypatch):
 
 
 def _build_array(uri="http://host/path?a=1&b=2", rand="randval", params="1"):
-    """Run ``buildUri`` and return the resulting ``uriArray`` (23 URLs)."""
+    """Run ``buildUri`` and return the resulting ``uriArray`` (21 URLs)."""
     web.buildUri(uri, rand, SimpleNamespace(params=params))
     return web.uriArray
 
@@ -60,8 +60,8 @@ def _decode(url):
     return urllib.parse.unquote_plus(url)
 
 
-def test_build_uri_array_has_twenty_three_payloads():
-    assert len(_build_array()) == 23
+def test_build_uri_array_has_twenty_one_payloads():
+    assert len(_build_array()) == 21
 
 
 def test_build_uri_every_entry_keeps_base_path():
@@ -89,7 +89,9 @@ def test_build_uri_encodes_brackets_and_dollar():
 
 
 def test_build_uri_ne_operator_payload():
-    assert "a[$ne]=randval" in _decode(_build_array()[1])
+    # ``$ne`` uses an empty value (consistent with the other operators); an
+    # empty value reliably matches every record (none equal the empty string).
+    assert "a[$ne]=" in _decode(_build_array()[1])
 
 
 def test_build_uri_gt_operator_payload():
@@ -97,11 +99,11 @@ def test_build_uri_gt_operator_payload():
 
 
 def test_build_uri_extended_operator_payloads():
-    # Indices 19-22 are the added associative-array operators.
-    assert "a[$in]=" in _decode(_build_array()[19])
-    assert "a[$regex]=" in _decode(_build_array()[20])
-    assert "a[$eq]=" in _decode(_build_array()[21])
-    assert "a[$exists]=" in _decode(_build_array()[22])
+    # Indices 19-20 are the added associative-array operators. Both use empty
+    # values: an empty value is the reliable bypass for these operators (a
+    # non-empty random value often matches nothing).
+    assert "a[$regex]=" in _decode(_build_array()[19])
+    assert "a[$exists]=" in _decode(_build_array()[20])
 
 
 def test_build_uri_where_find_string_escape():

