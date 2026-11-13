@@ -185,6 +185,10 @@ response size against the baseline (index `0`) to detect injection.
 | `16` | `P=a'; ---` | Template — `---` is replaced by `getDBInfo` (return-true / calc / char / user / hash) |
 | `17` | `P=1; if ---` | Template — numeric `if` variant for DB attacks |
 | `18` | `P=a'; var date = new Date(); … while(…< 10); return; var dummy='!` | Timing/delay injection — string escape |
+| `19` | `P[$in]=` | BSON operator `$in` (associative-array, undefined) |
+| `20` | `P[$regex]=` | BSON operator `$regex` (associative-array, undefined) |
+| `21` | `P[$eq]=` | BSON operator `$eq` (associative-array, undefined) |
+| `22` | `P[$exists]=` | BSON operator `$exists` (associative-array, undefined) |
 
 The payload bodies are defined in `nosqlmap/web.py` (`buildUri`) and their
 format is pinned by the unit tests in `tests/test_web.py`.
