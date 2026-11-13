@@ -124,6 +124,28 @@ nosqlmap --attack 1 --platform MongoDB --victim 127.0.0.1 --dbPort 27017
 nosqlmap --attack 1 --platform CouchDB --victim 127.0.0.1 --dbPort 5984
 ```
 
+### NoSQL Web App attacks (`--attack 2`)
+
+Injects into a web application's NoSQL queries. The `--uri` argument must
+include the query string (`?param=value`) — the tool parses the parameters from
+it — and `--params` selects which parameter(s) to inject by **1-based index**
+(comma-separated; `1` = the first parameter). `--httpMethod` defaults to `GET`
+(use `POST` with `--postData` for form submissions).
+
+```bash
+# GET: inject into the first query parameter of /acct.php?acctid=42
+nosqlmap --attack 2 --victim 127.0.0.1 --webPort 8080 \
+    --uri '/acct.php?acctid=42' --params 1 \
+    --injectSize 8 --injectFormat 1 --verb ON
+```
+
+Useful options: `--injectSize` (length of the random baseline string),
+`--injectFormat` (`1`=alphanumeric, `2`=letters, `3`=numbers, `4`=email),
+`--doTimeAttack` (`y`/`n` for timing-based tests), and `--savePath` (write the
+vulnerable / possibly-vulnerable URLs to a file). See
+[vuln_apps/README.md](vuln_apps/README.md) for worked examples against the
+bundled vulnerable app.
+
 ### Scan for Anonymous Access (`--attack 3`)
 
 Scans a subnet (or an IP list loaded from a file) for NoSQL instances that
