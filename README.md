@@ -6,7 +6,7 @@
 
 NoSQLMap is an open source Python tool designed to audit for as well as automate injection attacks and exploit default configuration weaknesses in NoSQL databases and web applications using NoSQL in order to disclose or clone data from the database.
 
-Originally authored by [@tcsstool](https://twitter.com/tcstoolHax0r), later maintained by [@codingo\_](https://twitter.com/codingo_) and ported to python3 by @egongu90 NoSQLMap is named as a tribute to Bernardo Damele and Miroslav's Stampar's popular SQL injection tool [sqlmap](http://sqlmap.org). Its concepts are based on and extensions of Ming Chow's excellent presentation at Defcon 21, ["Abusing NoSQL Databases"](https://www.defcon.org/images/defcon-21/dc-21-presentations/Chow/DEFCON-21-Chow-Abusing-NoSQL-Databases.pdf).
+Originally authored by [@tcsstool](https://twitter.com/tcstoolHax0r), later maintained by [@codingo\_](https://twitter.com/codingo_) and ported to python3 by [@egongu90](https://github.com/egongu90) NoSQLMap is named as a tribute to Bernardo Damele and Miroslav's Stampar's popular SQL injection tool [sqlmap](http://sqlmap.org). Its concepts are based on and extensions of Ming Chow's excellent presentation at Defcon 21, ["Abusing NoSQL Databases"](https://www.defcon.org/images/defcon-21/dc-21-presentations/Chow/DEFCON-21-Chow-Abusing-NoSQL-Databases.pdf).
 
 ## NoSQLMap MongoDB Management Attack Demo.
 
@@ -64,7 +64,7 @@ docker-compose run nosqlmap
 Start with
 
 ```
-python NoSQLMap
+nosqlmap
 ```
 
 NoSQLMap uses a menu based system for building attacks. Upon starting NoSQLMap you are presented with with the main menu:
@@ -94,6 +94,47 @@ x. Back to main menu-Use this once the options are set to start your attacks.
 
 Once options are set head back to the main menu and select DB access attacks or web app attacks as appropriate for whether you are attacking a NoSQL management port or web application. The rest of the tool is "wizard" based and fairly self explanatory, but send emails to codingo@protonmail.com or find me on Twitter [@codingo\_](https://twitter.com/codingo_) if you have any questions or suggestions.
 
+## Command-line usage
+
+You can drive NoSQLMap non-interactively with the `--attack` flag instead of
+the menu:
+
+```
+nosqlmap --attack <1|2|3> --platform <MongoDB|CouchDB> --victim <host> [options]
+```
+
+| `--attack` | Mode | What it does | Key options |
+|------------|------|--------------|-------------|
+| `1` | NoSQL DB Access Attacks | Target a database directly on its management port: check anonymous access, **brute-force credentials**, clone databases, or open a shell | `--victim`, `--dbPort`, `--myIP`, `--myPort` |
+| `2` | NoSQL Web App attacks | Inject into a web application's NoSQL queries (see [vuln_apps](vuln_apps/README.md) for worked examples) | `--victim`, `--webPort`, `--uri`, `--params` |
+| `3` | Scan for Anonymous platform Access | Scan a subnet (or an IP list from a file) for NoSQL instances that allow **anonymous/default** access | `--platform`, `--victim` |
+
+### DB Access Attacks (`--attack 1`)
+
+Targets a database directly (MongoDB default port `27017`, CouchDB `5984`).
+After the CLI connectivity check this mode is still wizard-driven: it prompts
+you to select the specific attack and, when brute-forcing, the username,
+character set, and maximum password length.
+
+```bash
+# MongoDB direct access / brute-force
+nosqlmap --attack 1 --platform MongoDB --victim 127.0.0.1 --dbPort 27017
+
+# CouchDB direct access
+nosqlmap --attack 1 --platform CouchDB --victim 127.0.0.1 --dbPort 5984
+```
+
+### Scan for Anonymous Access (`--attack 3`)
+
+Scans a subnet (or an IP list loaded from a file) for NoSQL instances that
+allow anonymous or default access. It is wizard-driven: it prompts for the
+subnet or file to scan, then offers to save results to CSV and to launch an
+attack against any discovered target.
+
+```bash
+nosqlmap --attack 3 --platform MongoDB
+```
+
 ## Vulnerable Applications
 
 This repo also includes an intentionally vulnerable web application to test NoSQLMap with. To run this application, you need Docker installed. Then you can run the following commands from the /vuln_apps directory.
@@ -102,4 +143,4 @@ This repo also includes an intentionally vulnerable web application to test NoSQ
 docker-compose build && docker-compose up
 ```
 
-Once that is complete, you should be able to access the vulnerable application by visiting: https://127.0.0.1/index.html
+Once that is complete, you should be able to access the vulnerable application by visiting: http://127.0.0.1:8080/index.html

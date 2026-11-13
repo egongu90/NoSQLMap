@@ -178,8 +178,38 @@ vulnerable / possibly-vulnerable URLs to a file.
 | `--verb`         | `ON` for verbose output                                                                          |
 | `--savePath`     | File to write the results to                                                                     |
 
-> Running `NoSQLMap` with no arguments opens an interactive menu; option **3**
+> Running `nosqlmap` with no arguments opens an interactive menu; option **3**
 > is "NoSQL Web App attacks" and walks you through the same options.
+
+The web-app attack above is the one that maps onto this app, because its
+vulnerabilities live in the **web layer**. NoSQLMap also has two direct
+**database**-oriented modes; here is how each behaves against this stack.
+
+### Direct DB access & brute-force (`--attack 1`)
+
+The Mongo container is exposed on **27017** with authentication
+(`root`/`prisma`). Point the DB-access attack straight at it to brute-force the
+credentials:
+
+```bash
+nosqlmap --attack 1 --platform MongoDB --victim localhost --dbPort 27017
+```
+
+This mode is wizard-driven: after the initial connectivity check it prompts you
+to pick the specific attack, and (for brute-forcing) the username, character
+set, and maximum password length.
+
+### Anonymous-access scan (`--attack 3`)
+
+```bash
+nosqlmap --attack 3 --platform MongoDB
+```
+
+The scan hunts for NoSQL instances that allow **anonymous** access. Because
+this app's Mongo has **authentication enabled**, it is the *negative control*
+here: a correct scan will **not** flag `localhost:27017` as anonymously
+accessible. (The app's real flaws are in the web layer, covered by `--attack 2`
+above.)
 
 ## Resetting the app
 

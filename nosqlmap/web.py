@@ -21,12 +21,12 @@ ssl._create_default_https_context = ssl._create_unverified_context
 
 
 def save_to(savePath, vulnAddrs, possAddrs, strTbAttack, intTbAttack):
-    fo = open(savePath, "wb")
+    fo = open(savePath, "w")
     fo.write("Vulnerable URLs:\n")
-    fo.write("\n".join(vulnAddrs))
+    fo.write("\n".join(decode_payloads(vulnAddrs)))
     fo.write("\n\n")
     fo.write("Possibly Vulnerable URLs:\n")
-    fo.write("\n".join(possAddrs))
+    fo.write("\n".join(decode_payloads(possAddrs)))
     fo.write("\n")
     fo.write("Timing based attacks:\n")
 
@@ -42,6 +42,20 @@ def save_to(savePath, vulnAddrs, possAddrs, strTbAttack, intTbAttack):
         fo.write("Integer attack-Unsuccessful\n")
     fo.write("\n")
     fo.close()
+
+
+def decode_payloads(addrs):
+    """Return ``addrs`` with each URL's query string decoded so the injection
+    payload is human-readable (e.g. ``acctid[$ne]=...`` instead of
+    ``acctid%5B%24ne%5D=...``). Non-URL entries (e.g. POST-data dict strings)
+    are passed through unchanged."""
+    decoded = []
+    for addr in addrs:
+        if isinstance(addr, str) and "?" in addr:
+            path, _, query = addr.partition("?")
+            addr = path + "?" + urllib.parse.unquote_plus(query)
+        decoded.append(addr)
+    return decoded
 
 
 def args():
@@ -411,10 +425,10 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
 
         print("\n")
         print("Vulnerable URLs:")
-        print("\n".join(vulnAddrs))
+        print("\n".join(decode_payloads(vulnAddrs)))
         print("\n")
         print("Possibly vulnerable URLs:")
-        print("\n".join(possAddrs))
+        print("\n".join(decode_payloads(possAddrs)))
         print("\n")
         print("Timing based attacks:")
 
@@ -446,7 +460,6 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
 
 def getResponseBodyHandlingErrors(req):
     try:
-        print(req)
         responseBody = urllib.request.urlopen(req).read()
     except urllib.error.HTTPError as err:
         responseBody = err.read()
@@ -860,10 +873,10 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
 
         print("\n")
         print("Exploitable requests:")
-        print("\n".join(vulnAddrs))
+        print("\n".join(decode_payloads(vulnAddrs)))
         print("\n")
         print("Possibly vulnerable requests:")
-        print("\n".join(possAddrs))
+        print("\n".join(decode_payloads(possAddrs)))
         print("\n")
         print("Timing based attacks:")
 
