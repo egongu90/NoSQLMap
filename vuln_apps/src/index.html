@@ -5,11 +5,34 @@
 
     <body>
         <h1>Customer Information</h1>
-        <h3>Enter your customer ID to show your account information:</h3>
+        <p>
+            This demo application exposes three lookups, each backed by a MongoDB
+            query that is vulnerable to NoSQL injection.
+        </p>
 
+        <h2>1. Account lookup</h2>
+        <h3>Enter your customer ID to show your account information:</h3>
         <form method="get" action="acct.php">
             Customer ID:
             <input type="text" name="acctid" value="" />
+            <br />
+            <input type="submit" />
+        </form>
+
+        <h2>2. User lookup</h2>
+        <h3>Search a user profile by username:</h3>
+        <form method="get" action="userdata.php">
+            Username:
+            <input type="text" name="usersearch" value="" />
+            <br />
+            <input type="submit" />
+        </form>
+
+        <h2>3. Order lookup</h2>
+        <h3>Use the Order ID to locate your order:</h3>
+        <form method="get" action="orderdata.php">
+            Order ID:
+            <input type="text" name="ordersearch" value="" />
             <br />
             <input type="submit" />
         </form>

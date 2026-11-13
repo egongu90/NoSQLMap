@@ -1,6 +1,6 @@
 # NoSQLMap
 
-[![Python 2.6|2.7](https://img.shields.io/badge/python-2.6|2.7-yellow.svg)](https://www.python.org/)
+[![Python 3](https://img.shields.io/badge/python-3-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-GPLv3-red.svg)](https://github.com/codingo/NoSQLMap/blob/master/COPYING)
 [![Twitter](https://img.shields.io/badge/twitter-@codingo__-blue.svg)](https://twitter.com/codingo_)
 
@@ -34,7 +34,6 @@ Varies based on features used:
 
 -   Metasploit Framework,
 -   Python with PyMongo,
--   httplib2,
 -   and urllib available.
 -   A local, default MongoDB instance for cloning databases to. Check [here](http://docs.mongodb.org/manual/installation/) for installation instructions.
 
@@ -43,7 +42,8 @@ There are some various other libraries required that a normal Python installatio
 ## Setup
 
 ```
-python setup.py install
+pip install -r requirements.txt
+pip install .
 ```
 
 Alternatively you can build a Docker image by changing to the docker directory and entering:

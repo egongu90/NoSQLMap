@@ -10,7 +10,8 @@ ADD . /code
 
 WORKDIR /code
 
-RUN python -m pip install requests certifi setuptools six \
+RUN python -m pip install setuptools \
+    && pip install -r requirements.txt \
     && pip install .
 
 ENTRYPOINT ["nosqlmap.py"]

@@ -1,12 +1,12 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # NoSQLMap Copyright 2012-2017 NoSQLMap Development team
 # See the file 'doc/COPYING' for copying permission
 
 
-from exception import NoSQLMapException
-import ipcalc
-import nsmmongo
-import nsmcouch
+from .exceptions import NoSQLMapException
+import ipaddress
+from . import mongodb
+from . import couchdb
 
 
 def args():
@@ -41,10 +41,10 @@ def massScan(platform, args=None):
             subnet = input("Enter subnet to scan: ")
 
             try:
-                for ip in ipcalc.Network(subnet):
+                for ip in ipaddress.ip_network(subnet, strict=False):
                     ipList.append(str(ip))
                 optCheck = False
-            except NoSQLMapException:
+            except (ValueError, NoSQLMapException):
                 input("Not a valid subnet.  Press enter to return to main menu.")
                 return
 
@@ -76,10 +76,10 @@ def massScan(platform, args=None):
     for target in ipList:
 
         if platform == "MongoDB":
-            result = nsmmongo.mongoScan(target.rstrip(), 27017, ping)
+            result = mongodb.mongoScan(target.rstrip(), 27017, ping)
 
         elif platform == "CouchDB":
-            result = nsmcouch.couchScan(target.rstrip(), 5984, ping)
+            result = couchdb.couchScan(target.rstrip(), 5984, ping)
 
         if result[0] == 0:
             print(

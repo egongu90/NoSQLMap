@@ -1,13 +1,13 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # NoSQLMap Copyright 2012-2017 NoSQLMap Development team
 # See the file 'doc/COPYING' for copying permission
 
-from exception import NoSQLMapException
+from .exceptions import NoSQLMapException
 import sys
-import nsmcouch
-import nsmmongo
-import nsmscan
-import nsmweb
+from . import couchdb
+from . import mongodb
+from . import scan
+from . import web
 import os
 import signal
 import ast
@@ -61,7 +61,7 @@ def mainMenu():
 
     mmSelect = True
     while mmSelect:
-        os.system("clear")
+        os.system("clear" if os.name == "posix" else "cls")
         print(" _  _     ___  ___  _    __  __           ")
         print(r"| \| |___/ __|/ _ \| |  |  \/  |__ _ _ __ ")
         print("| .` / _ \\__ \\ (_) | |__| |\\/| / _` | '_ \\")
@@ -83,10 +83,10 @@ def mainMenu():
         elif select == "2":
             if optionSet[0] == True and optionSet[4] == True:
                 if platform == "MongoDB":
-                    nsmmongo.netAttacks(victim, dbPort, myIP, myPort)
+                    mongodb.netAttacks(victim, dbPort, myIP, myPort)
 
                 elif platform == "CouchDB":
-                    nsmcouch.netAttacks(victim, dbPort, myIP)
+                    couchdb.netAttacks(victim, dbPort, myIP)
 
             # Check minimum required options
             else:
@@ -96,10 +96,10 @@ def mainMenu():
             # Check minimum required options
             if (optionSet[0] == True) and (optionSet[2] == True):
                 if httpMethod == "GET":
-                    nsmweb.getApps(webPort, victim, uri, https, verb, requestHeaders)
+                    web.getApps(webPort, victim, uri, https, verb, requestHeaders)
 
                 elif httpMethod == "POST":
-                    nsmweb.postApps(
+                    web.postApps(
                         victim, webPort, uri, https, verb, postData, requestHeaders
                     )
 
@@ -109,7 +109,7 @@ def mainMenu():
                 )
 
         elif select == "4":
-            scanResult = nsmscan.massScan(platform)
+            scanResult = scan.massScan(platform)
 
             if scanResult != None:
                 optionSet[0] = True
@@ -158,18 +158,20 @@ def attack(args):
 
     if args.attack == 1:
         if platform == "MongoDB":
-            nsmmongo.netAttacks(victim, dbPort, myIP, myPort, args)
+            mongodb.netAttacks(victim, dbPort, myIP, myPort, args)
         elif platform == "CouchDB":
-            nsmcouch.netAttacks(victim, dbPort, myIP, args)
+            couchdb.netAttacks(victim, dbPort, myIP, args)
     elif args.attack == 2:
         if httpMethod == "GET":
-            nsmweb.getApps(webPort, victim, uri, https, verb, requestHeaders, args)
+            web.getApps(webPort, victim, uri, https, verb, requestHeaders, args)
         elif httpMethod == "POST":
-            nsmweb.postApps(
+            import urllib.parse
+            postdata = urllib.parse.urlencode(postData).encode("utf-8")
+            web.postApps(
                 victim, webPort, uri, https, verb, postData, requestHeaders, args
             )
     elif args.attack == 3:
-        scanResult = nsmscan.massScan(platform)
+        scanResult = scan.massScan(platform)
         if scanResult != None:
             optionSet[0] = True
             victim = scanResult[1]
@@ -385,9 +387,6 @@ def options():
                             print("Bad octet in IP address.")
                             goodDigits = False
 
-                        # else:
-                        # goodDigits = True
-
                         # Default value of goodDigits should be set to True
                         # for example 12.12345.12.12
 
@@ -584,7 +583,7 @@ def build_parser():
         help="Request headers in a comma separated list (i.e. param name 1,value1,param name 2,value2)",
         default="",
     )
-    modules = [nsmcouch, nsmmongo, nsmscan, nsmweb]
+    modules = [couchdb, mongodb, scan, web]
     for module in modules:
         group = parser.add_argument_group(module.__name__)
         for arg in module.args():
@@ -599,7 +598,9 @@ def signal_handler(signal, frame):
     sys.exit()
 
 
+def cli():
+    main(build_parser().parse_args())
+
+
 if __name__ == "__main__":
-    parser = build_parser()
-    args = parser.parse_args()
-    main(args)
+    cli()

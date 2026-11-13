@@ -1,17 +1,15 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # NoSQLMap Copyright 2012-2017 NoSQLMap Development team
 # See the file 'doc/COPYING' for copying permission
 
-from exception import NoSQLMapException
+from .exceptions import NoSQLMapException
+from . import brute
 import couchdb
-import six.moves.urllib.request, six.moves.urllib.parse, six.moves.urllib.error
+import urllib.request
 import requests
 import sys
-import unittest
 from pbkdf2 import PBKDF2
 from binascii import a2b_hex
-import string
-import itertools
 from hashlib import sha1
 import os
 
@@ -114,7 +112,7 @@ def netAttacks(target, port, myIP, args=None):
     mgtUrl = "http://" + target + ":" + str(port) + "/_utils"
     # Future rev:  Add web management interface parsing
     try:
-        mgtRespCode = six.moves.urllib.request.urlopen(mgtUrl).getcode()
+        mgtRespCode = urllib.request.urlopen(mgtUrl).getcode()
         if mgtRespCode == 200:
             print(
                 "Sofa web management open at "
@@ -283,132 +281,16 @@ def stealDBs(myDB, couchConn, target, port):
         return
 
 
+def verify_couch(candidate, salt, encPass, dbVer):
+    """Return True if ``candidate`` matches the stored CouchDB password hash.
+
+    CouchDB switched from SHA-1 to PBKDF2 in v1.3, so the scheme is chosen
+    from the server version.
+    """
+    if float(dbVer[0:3]) < 1.3:
+        return sha1((candidate + salt).encode()).hexdigest() == encPass
+    return PBKDF2(candidate.encode(), salt.encode(), 10).read(20) == a2b_hex(encPass)
+
+
 def passCrack(user, encPass, salt, dbVer):
-    select = True
-    print("Select password cracking method: ")
-    print("1-Dictionary Attack")
-    print("2-Brute Force")
-    print("3-Exit")
-
-    while select:
-        select = input("Selection: ")
-
-        if select == "1":
-            select = False
-            dict_pass(encPass, salt, dbVer)
-
-        elif select == "2":
-            select = False
-            brute_pass(encPass, salt, dbVer)
-
-        elif select == "3":
-            return
-    return
-
-
-def genBrute(chars, maxLen):
-    return (
-        "".join(candidate)
-        for candidate in itertools.chain.from_iterable(
-            itertools.product(chars, repeat=i) for i in range(1, maxLen + 1)
-        )
-    )
-
-
-def brute_pass(hashVal, salt, dbVer):
-    charSel = True
-    print("\n")
-    maxLen = input("Enter the maximum password length to attempt: ")
-    print("1-Lower case letters")
-    print("2-Upper case letters")
-    print("3-Upper + lower case letters")
-    print("4-Numbers only")
-    print("5-Alphanumeric (upper and lower case)")
-    print("6-Alphanumeric + special characters")
-    charSel = input("\nSelect character set to use:")
-
-    if charSel == "1":
-        chainSet = string.ascii_lowercase
-
-    elif charSel == "2":
-        chainSet = string.ascii_uppercase
-
-    elif charSel == "3":
-        chainSet = string.ascii_letters
-
-    elif charSel == "4":
-        chainSet = string.digits
-
-    elif charSel == "5":
-        chainSet = string.ascii_letters + string.digits
-
-    elif charSel == "6":
-        chainSet = (
-            string.ascii_letters + string.digits + "!@#$%^&*()-_+={}[]|~`':;<>,.?/"
-        )
-
-    count = 0
-    print("\n", end=" ")
-
-    for attempt in genBrute(chainSet, int(maxLen)):
-        print("\rCombinations tested: " + str(count) + "\r")
-        count += 1
-
-        # CouchDB hashing method changed starting with v1.3.  Decide based on DB version which hash method to use.
-        if float(dbVer[0:3]) < 1.3:
-            gotIt = gen_pass_couch(attempt, salt, hashVal)
-        else:
-            gotIt = gen_pass_couch13(attempt, salt, 10, hashVal)
-
-        if gotIt == True:
-            break
-
-
-def dict_pass(key, salt, dbVer):
-    loadCheck = False
-
-    while loadCheck == False:
-        dictionary = input("Enter path to password dictionary: ")
-
-        try:
-            with open(dictionary) as f:
-                passList = f.readlines()
-                loadCheck = True
-
-        except NoSQLMapException:
-            print(" Couldn't load file.")
-
-    print("Running dictionary attack...")
-
-    for passGuess in passList:
-        temp = passGuess.split("\n")[0]
-
-        # CouchDB hashing method changed starting with v1.3.  Decide based on DB version which hash method to use.
-        if float(dbVer[0:3]) < 1.3:
-            gotIt = gen_pass_couch(temp, salt, key)
-        else:
-            gotIt = gen_pass_couch13(temp, salt, 10, key)
-
-        if gotIt == True:
-            break
-
-    return
-
-
-def gen_pass_couch(passw, salt, hashVal):
-    if sha1(passw + salt).hexdigest() == hashVal:
-        print("Password Cracked - " + passw)
-        return True
-
-    else:
-        return False
-
-
-def gen_pass_couch13(passw, salt, iterations, hashVal):
-    result = PBKDF2(passw, salt, iterations).read(20)
-    expected = a2b_hex(hashVal)
-    if result == expected:
-        print("Password Cracked- " + passw)
-        return True
-    else:
-        return False
+    brute.crack(lambda c: verify_couch(c, salt, encPass, dbVer), "Password Cracked - ")
