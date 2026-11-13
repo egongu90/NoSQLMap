@@ -200,6 +200,9 @@ var/
 sdist/
 develop-eggs/
 .installed.cfg
+.venv/
+__pycache__/
+.pytest_cache/
 
 # Installer logs
 pip-log.txt

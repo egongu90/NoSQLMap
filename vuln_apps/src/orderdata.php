@@ -7,29 +7,22 @@
 		<?php
 		if (isset($_GET['ordersearch']) && !empty($_GET['ordersearch'])) {
 			try {
-				$result = "";
-				$conn = new MongoClient('mongodb://127.0.0.1');
-				$db = $conn->shop;
-					$collection = $db->orders;
-					$search = $_GET['ordersearch'];
-					$js = "function () { var query = '". $search . "'; return this.id == query;}";
-					//print $js;
-					print '<br/>';
-			
-				$cursor = $collection->find(array('$where' => $js));
-				echo $cursor->count() . ' order(s) found. <br/>';
-			
+				$conn = new MongoDB\Driver\Manager('mongodb://root:prisma@mongo:27017');
+				$search = $_GET['ordersearch'];
+				$js = "function () { var query = '". $search . "'; return this.id == query;}";
+				$query = new MongoDB\Driver\Query(['$where' => $js]);
+				$cursor = $conn->executeQuery('shop.orders', $query);
+				$count = 0;
 				foreach ($cursor as $obj) {
-						echo 'Order ID: ' . $obj['id'] . '<br/>';
-						echo 'Name: ' . $obj['name'] . '<br/>';
-						echo 'Item: ' . $obj['item'] . '<br/>';
-						echo 'Quantity: ' . $obj['quantity']. '<br/>';
-						echo '<br/>';
+					$count++;
+					echo 'Order ID: ' . $obj->id . '<br/>';
+					echo 'Name: ' . $obj->name . '<br/>';
+					echo 'Item: ' . $obj->item . '<br/>';
+					echo 'Quantity: ' . $obj->quantity . '<br/>';
+					echo '<br/>';
 				}
-				$conn->close();
-			} catch (MongoConnectionException $e) {
-				die('Error connecting to MongoDB server : ' . $e->getMessage());
-			} catch (MongoException $e) {
+				echo $count . ' order(s) found. <br/>';
+			} catch (\Exception $e) {
 				die('Error: ' . $e->getMessage());
 			}
 		}
@@ -42,8 +35,6 @@
 					value="Submit" /></p>
 		</form>
 		<div id="results">
-			<?php echo $result; ?>
 		</div>
 	</body>
-
 </html>

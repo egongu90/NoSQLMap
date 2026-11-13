@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "NoSQLMap"
+version = "0.8"
+description = "Automated MongoDB and NoSQL web application exploitation tool"
+readme = "README.md"
+license = { text = "GPLv3" }
+authors = [
+    { name = "tcstool", email = "codingo@protonmail.com" },
+]
+requires-python = ">=3.8"
+# Runtime dependencies are managed in requirements.txt
+
+[project.urls]
+homepage = "http://www.nosqlmap.net"
+
+[project.scripts]
+nosqlmap = "nosqlmap.cli:cli"
+
+[tool.setuptools]
+packages = ["nosqlmap"]
